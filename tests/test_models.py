@@ -5,6 +5,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -30,29 +31,25 @@ def small_data(rng):
     """Small realistic dataset: 3 products, 10 obs each = 30 obs."""
     n_products = 3
     n_per = 10
-    n_obs = n_products * n_per
+    product_names = ["Cheese Cake (slice)", "Apple Strudel (piece)", "Kolache (each)"]
 
-    # True product means
     true_mu = np.array([12.0, 8.0, 5.0])
     alpha = 5.0
 
-    # Generate demand
     demand = rng.negative_binomial(alpha, alpha / (alpha + true_mu), size=(n_per, n_products))
-    prepared = np.ceil(demand * 1.2).astype(int)  # Over-prepare by 20%
+    prepared = np.ceil(demand * 1.2).astype(int)
 
-    # Flatten
     sold = demand.T.ravel()
     prepared = prepared.T.ravel()
-    product_ids = np.repeat(np.arange(n_products), n_per)
-
-    # Determine censoring: sold >= prepared → sellout, left == 0
     censored = (sold >= prepared).astype(bool)
-    # For censored obs, cap sold at prepared (we only know demand >= prepared)
     sold[censored] = prepared[censored]
 
-    product_names = ["Cheese Cake (slice)", "Apple Strudel (piece)", "Kolache (each)"]
-
-    return sold, prepared, censored, product_ids, product_names
+    return pd.DataFrame({
+        "sold": sold,
+        "prepared": prepared,
+        "censored": censored,
+        "product": np.repeat(product_names, n_per),
+    })
 
 
 @pytest.fixture
@@ -60,17 +57,21 @@ def tiny_data(rng):
     """Tiny dataset for fast integration tests: 2 products, 5 obs each."""
     n_products = 2
     n_per = 5
+    product_names = ["Cake A", "Cake B"]
     true_mu = np.array([10.0, 6.0])
     alpha = 5.0
     demand = rng.negative_binomial(alpha, alpha / (alpha + true_mu), size=(n_per, n_products))
     prepared = np.ceil(demand * 1.3).astype(int)
     sold = demand.T.ravel()
     prepared = prepared.T.ravel()
-    product_ids = np.repeat(np.arange(n_products), n_per)
     censored = (sold >= prepared).astype(bool)
     sold[censored] = prepared[censored]
-    product_names = ["Cake A", "Cake B"]
-    return sold, prepared, censored, product_ids, product_names
+    return pd.DataFrame({
+        "sold": sold,
+        "prepared": prepared,
+        "censored": censored,
+        "product": np.repeat(product_names, n_per),
+    })
 
 
 class TestDemandModelInit:
@@ -114,39 +115,32 @@ class TestDemandModelBuild:
         """build() creates a pm.Model."""
         from nachfrage.models import DemandModel
 
-        sold, prepared, censored, product_ids, product_names = small_data
-
         dm = DemandModel(model_config)
-        dm.build(sold, prepared, censored, product_ids, product_names)
+        dm.build(small_data)
 
         import pymc as pm
 
         assert dm.model is not None
         assert isinstance(dm.model, pm.Model)
 
-    def test_build_mismatched_arrays(self, model_config):
-        """Raises ValueError when arrays have different lengths."""
+    def test_build_missing_columns(self, model_config):
+        """Raises ValueError when required columns are missing."""
         from nachfrage.models import DemandModel
 
         dm = DemandModel(model_config)
+        bad_df = pd.DataFrame({"sold": [1, 2, 3], "other": [4, 5, 6]})
         with pytest.raises(ValueError):
-            dm.build(
-                np.array([1, 2, 3]),
-                np.array([4, 5]),
-                np.array([True, False]),
-                np.array([0, 0, 0]),
-                ["A", "B"],
-            )
+            dm.build(bad_df)
 
     def test_build_stores_product_names(self, small_data, model_config):
-        """product_names are stored after build."""
+        """product_names are stored after build (derived from product column)."""
         from nachfrage.models import DemandModel
 
-        sold, prepared, censored, product_ids, product_names = small_data
         dm = DemandModel(model_config)
-        dm.build(sold, prepared, censored, product_ids, product_names)
+        dm.build(small_data)
 
-        assert dm.product_names == product_names
+        expected = ["Cheese Cake (slice)", "Apple Strudel (piece)", "Kolache (each)"]
+        assert dm.product_names == expected
 
     def test_build_with_single_product(self, model_config, rng):
         """Works with only one product."""
@@ -157,10 +151,16 @@ class TestDemandModelBuild:
         prepared = (sold * 1.3).astype(int)
         censored = (sold >= prepared).astype(bool)
         sold[censored] = prepared[censored]
-        product_ids = np.zeros(n, dtype=int)
+
+        df = pd.DataFrame({
+            "sold": sold,
+            "prepared": prepared,
+            "censored": censored,
+            "product": ["Only Cake"] * n,
+        })
 
         dm = DemandModel(model_config)
-        dm.build(sold, prepared, censored, product_ids, ["Only Cake"])
+        dm.build(df)
 
         assert dm.model is not None
 
@@ -172,10 +172,8 @@ class TestDemandModelFit:
         """fit() stores an InferenceData object with expected variables."""
         from nachfrage.models import DemandModel
 
-        sold, prepared, censored, product_ids, product_names = tiny_data
-
         dm = DemandModel(model_config)
-        dm.build(sold, prepared, censored, product_ids, product_names)
+        dm.build(tiny_data)
         dm.fit(
             draws=5,
             tune=5,
@@ -200,10 +198,8 @@ class TestDemandModelFit:
         """fit() works with nutpie sampler (default)."""
         from nachfrage.models import DemandModel
 
-        sold, prepared, censored, product_ids, product_names = tiny_data
-
         dm = DemandModel(model_config)
-        dm.build(sold, prepared, censored, product_ids, product_names)
+        dm.build(tiny_data)
         dm.fit(
             draws=5,
             tune=5,
@@ -224,9 +220,8 @@ class TestDemandModelSamplePPD:
         """A fitted DemandModel instance."""
         from nachfrage.models import DemandModel
 
-        sold, prepared, censored, product_ids, product_names = tiny_data
         dm = DemandModel(model_config)
-        dm.build(sold, prepared, censored, product_ids, product_names)
+        dm.build(tiny_data)
         dm.fit(draws=5, tune=5, chains=1, random_seed=42, progressbar=False)
         return dm
 
@@ -269,9 +264,8 @@ class TestDemandModelNetCDF:
         """A fitted DemandModel instance."""
         from nachfrage.models import DemandModel
 
-        sold, prepared, censored, product_ids, product_names = tiny_data
         dm = DemandModel(model_config)
-        dm.build(sold, prepared, censored, product_ids, product_names)
+        dm.build(tiny_data)
         dm.fit(draws=5, tune=5, chains=1, random_seed=42, progressbar=False)
         return dm
 

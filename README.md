@@ -16,6 +16,7 @@ pip install nachfrage[plot]
 
 ```python
 import numpy as np
+import pandas as pd
 from nachfrage import DemandModel, optimal_quantity
 from nachfrage.plot import plot_forest
 
@@ -25,21 +26,33 @@ n_products = 3
 n_per = 10
 true_mu = np.array([12.0, 8.0, 5.0])
 alpha = 5.0
+product_names = ["Cheese Cake (slice)", "Apple Strudel (piece)", "Bienenstich (slice)"]
 
 demand = rng.negative_binomial(alpha, alpha / (alpha + true_mu),
                                size=(n_per, n_products))
 prepared = np.ceil(demand * 1.2).astype(int)
 sold = demand.T.ravel()
 prepared = prepared.T.ravel()
-product_ids = np.repeat(np.arange(n_products), n_per)
 censored = (sold >= prepared).astype(bool)
 sold[censored] = prepared[censored]
-product_names = ["Cheese Cake (slice)", "Apple Strudel (piece)", "Bienenstich (slice)"]
+
+df = pd.DataFrame({
+    "sold": sold,
+    "prepared": prepared,
+    "censored": censored,
+    "product": np.repeat(product_names, n_per),
+})
+print(df.head())
+#    sold  prepared  censored                     product
+# 0  12.0      15.0     False  Cheese Cake (slice)
+# 1   9.0      12.0     False  Cheese Cake (slice)
+# 2  13.0      16.0     False  Cheese Cake (slice)
+# 3   9.0      16.0     False  Cheese Cake (slice)
+# 4   7.0      12.0     False  Cheese Cake (slice)
 
 # --- Build and fit the model ---
 model = DemandModel()
-model.build(sold=sold, prepared=prepared, censored=censored,
-            product_ids=product_ids, product_names=product_names)
+model.build(df)
 model.fit(draws=1000, tune=1000, chains=4, random_seed=42)
 
 # --- Posterior predictive ---
@@ -105,7 +118,7 @@ model = DemandModel(model_config={
 
 ```python
 model = DemandModel(model_config={...})
-model.build(sold, prepared, censored, product_ids, product_names)
+model.build(df)  # df has columns: sold, prepared, censored, product
 model.fit(draws=1000, tune=1000, chains=4)
 ppd = model.sample_posterior_predictive(n_samples=10000)
 model.to_netcdf("posterior.nc")      # save

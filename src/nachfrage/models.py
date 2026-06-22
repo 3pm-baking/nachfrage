@@ -15,12 +15,11 @@ from typing import Any
 
 import arviz as az
 import numpy as np
+import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
 import xarray as xr
-from pymc_extras.prior import Censored
-from pymc_extras.prior import Prior
-
+from pymc_extras.prior import Censored, Prior
 
 DEFAULT_MODEL_CONFIG: dict[str, Any] = {
     "likelihood": Censored(
@@ -41,8 +40,7 @@ class DemandModel:
 
     Lifecycle:
         >>> model = DemandModel(model_config={...})
-        >>> model.build(sold=sold, prepared=prepared, censored=censored,
-        ...             product_ids=product_ids, product_names=product_names)
+        >>> model.build(data=df)  # df has columns: sold, prepared, censored, product
         >>> model.fit(draws=1000, tune=1000, chains=4)
         >>> ppd = model.sample_posterior_predictive(n_samples=10000)
         >>> model.to_netcdf("posterior.nc")
@@ -68,42 +66,42 @@ class DemandModel:
         self.idata: xr.DataTree | None = None
         self.product_names: list[str] | None = None
 
-    def build(
-        self,
-        sold: np.ndarray,
-        prepared: np.ndarray,
-        censored: np.ndarray,
-        product_ids: np.ndarray,
-        product_names: list[str],
-    ) -> DemandModel:
-        """Build the PyMC model graph.
+    def build(self, data: pd.DataFrame) -> DemandModel:
+        """Build the PyMC model graph from a DataFrame.
 
         Args:
-            sold: Observed sales per market day (n_obs,).
-            prepared: Units prepared per market day (n_obs,).
-            censored: Boolean array — True if sellout (demand >= prepared).
-            product_ids: Integer index mapping each observation to a product.
-            product_names: Unique product names (used as coordinate labels).
+            data: DataFrame with columns:
+                - sold: Observed sales per market day.
+                - prepared: Units prepared per market day.
+                - censored: Boolean — True if sellout (demand >= prepared).
+                - product: Product name for each observation.
 
         Returns:
             self (for method chaining).
 
         Raises:
-            ValueError: If array lengths don't match.
+            ValueError: If required columns are missing.
         """
-        if not (len(sold) == len(prepared) == len(censored) == len(product_ids)):
+        required = {"sold", "prepared", "censored", "product"}
+        missing = required - set(data.columns)
+        if missing:
             raise ValueError(
-                "sold, prepared, censored, and product_ids must have the same length"
+                f"DataFrame must have columns: {', '.join(sorted(required))}. "
+                f"Missing: {', '.join(sorted(missing))}"
             )
 
-        n_obs = len(sold)
-        sold_arr = np.asarray(sold, dtype=float)
-        prepared_arr = np.asarray(prepared, dtype=float)
-        censored_arr = np.asarray(censored, dtype=bool)
-        product_id_arr = np.asarray(product_ids, dtype=int)
+        sold_arr = data["sold"].values.astype(float)
+        prepared_arr = data["prepared"].values.astype(float)
+        censored_arr = data["censored"].values.astype(bool)
+
+        codes, unique_names = pd.factorize(data["product"])
+        product_names = unique_names.tolist()
+        product_id_arr = codes.astype(int)
+
+        n_obs = len(sold_arr)
 
         coords = {
-            "product": list(product_names),
+            "product": product_names,
             "obs": np.arange(n_obs),
         }
 
@@ -130,7 +128,7 @@ class DemandModel:
             )
 
         self.model = model
-        self.product_names = list(product_names)
+        self.product_names = product_names
         return self
 
     def fit(
