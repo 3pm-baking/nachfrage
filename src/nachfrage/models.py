@@ -232,6 +232,68 @@ class DemandModel:
             name="demand_ppd",
         )
 
+    def sample_new_product_predictive(
+        self,
+        n_samples: int = 10000,
+        n_products: int = 1,
+        seed: int = 42,
+    ) -> xr.DataArray:
+        """Draw posterior predictive demand for a new product with no observations.
+
+        Samples from the population distribution: draws a raw product offset
+        from Normal(0, 1), scales it by sigma_product, and shifts by mu_global.
+        Integrates over posterior uncertainty in all parameters.
+
+        Args:
+            n_samples: Number of posterior predictive draws.
+            n_products: Number of hypothetical new products to simulate.
+            seed: Random seed for reproducibility.
+
+        Returns:
+            xr.DataArray with dims (sample, product) and product coordinate
+            labeled ``new_0, new_1, ...``.
+
+        Raises:
+            RuntimeError: If idata is not available.
+        """
+        if self.idata is None:
+            raise RuntimeError(
+                "No posterior samples available. Call fit() or from_netcdf() first."
+            )
+
+        mu_global = self.idata.posterior["mu_global"]
+        sigma_product = self.idata.posterior["sigma_product"]
+        alpha = self.idata.posterior["demand_alpha"]
+
+        mu_g_stacked = mu_global.stack(sample=("chain", "draw")).values
+        sig_stacked = sigma_product.stack(sample=("chain", "draw")).values
+        alpha_stacked = alpha.stack(sample=("chain", "draw")).values
+
+        n_total = len(mu_g_stacked)
+        rng = np.random.default_rng(seed)
+        idx = rng.integers(0, n_total, size=n_samples)
+
+        mu_g_s = mu_g_stacked[idx]           # (n_samples,)
+        sig_s = sig_stacked[idx]             # (n_samples,)
+        alpha_s = alpha_stacked[idx]         # (n_samples,)
+
+        # Sample raw offset from the population prior: z ~ Normal(0, 1)
+        z = rng.normal(size=(n_samples, n_products))
+
+        mu_new = np.exp(mu_g_s[:, None] + z * sig_s[:, None])
+        p = alpha_s[:, None] / (alpha_s[:, None] + mu_new)
+        ppd_vals = rng.negative_binomial(alpha_s[:, None], p)
+
+        return xr.DataArray(
+            ppd_vals,
+            dims=("sample", "product"),
+            coords={
+                "sample": np.arange(n_samples),
+                "product": [f"new_{i}" for i in range(n_products)],
+            },
+            name="demand_ppd_new",
+        )
+
     def to_netcdf(self, path: str | Path, engine: str | None = None) -> None:
         """Save posterior inference data to a netCDF file.
 

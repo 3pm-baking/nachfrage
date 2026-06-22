@@ -76,8 +76,9 @@ import arviz_plots as azp
 import matplotlib.pyplot as plt
 import xarray as xr
 
-dt = xr.DataTree({"demand": ppd})
-azp.plot_forest(dt, var_names=["demand"])
+dt = xr.DataTree()
+dt["demand"] = xr.DataTree(ppd.to_dataset(name="demand"))
+azp.plot_forest(dt, group="demand", var_names=["demand"], sample_dims=["sample"])
 plt.savefig("forest.png", dpi=150, bbox_inches="tight")
 ```
 

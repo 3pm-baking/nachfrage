@@ -262,6 +262,50 @@ class TestDemandModelSamplePPD:
             dm.sample_posterior_predictive()
 
 
+class TestDemandModelNewProductPPD:
+    """Tests for DemandModel.sample_new_product_predictive()."""
+
+    @pytest.fixture
+    def fitted_model(self, tiny_data, model_config):
+        """A fitted DemandModel instance."""
+        from nachfrage.models import DemandModel
+
+        dm = DemandModel(model_config)
+        dm.build(tiny_data)
+        dm.fit(draws=5, tune=5, chains=1, random_seed=42, progressbar=False)
+        return dm
+
+    def test_returns_xarray_dataarray(self, fitted_model):
+        """Returns xr.DataArray."""
+        ppd = fitted_model.sample_new_product_predictive(n_samples=100)
+
+        import xarray as xr
+
+        assert isinstance(ppd, xr.DataArray)
+
+    def test_correct_dims_single_product(self, fitted_model):
+        """Default single product gives dims (sample, product) with 1 product."""
+        ppd = fitted_model.sample_new_product_predictive(n_samples=100)
+
+        assert set(ppd.dims) == {"sample", "product"}
+        assert ppd.sizes["sample"] == 100
+        assert ppd.sizes["product"] == 1
+
+    def test_multiple_products(self, fitted_model):
+        """n_products controls the product dimension."""
+        ppd = fitted_model.sample_new_product_predictive(n_samples=50, n_products=3)
+
+        assert ppd.sizes["product"] == 3
+        assert list(ppd.coords["product"].values) == ["new_0", "new_1", "new_2"]
+
+    def test_non_negative_integer_values(self, fitted_model):
+        """All PPD values are non-negative integers."""
+        ppd = fitted_model.sample_new_product_predictive(n_samples=200)
+
+        assert ppd.dtype.kind == "i"
+        assert np.all(ppd.values >= 0)
+
+
 class TestDemandModelNetCDF:
     """Tests for to_netcdf() / from_netcdf() roundtrip."""
 
