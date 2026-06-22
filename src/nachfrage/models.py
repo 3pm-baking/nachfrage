@@ -253,7 +253,7 @@ class DemandModel:
         idata = self.idata.copy()
         if self.product_names:
             idata.attrs["product_names"] = json.dumps(self.product_names)
-        idata.to_netcdf(str(path), engine="h5netcdf")
+        idata.to_netcdf(str(path))
 
     @classmethod
     def from_idata(
