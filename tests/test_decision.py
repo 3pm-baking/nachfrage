@@ -1,43 +1,44 @@
 """Tests for nachfrage.decision — pure numpy newvendor functions."""
 
 import numpy as np
-import pandas as pd
 import pytest
 
 
 class TestOptimalQuantity:
     """Tests for optimal_quantity()."""
 
-    def test_none_price_returns_none(self, deterministic_ppd):
-        """Returns all None when price is None."""
+    def test_none_price_raises(self, deterministic_ppd):
+        """Raises ValueError when price is None."""
         from nachfrage.decision import optimal_quantity
 
-        result = optimal_quantity(deterministic_ppd[:, 0], None, 2.0)
-        assert result == (None, None, None, None, None, None)
+        with pytest.raises(ValueError, match="price must be a number"):
+            optimal_quantity(deterministic_ppd[:, 0], None, 2.0)
 
-    def test_none_cost_returns_none(self, deterministic_ppd):
-        """Returns all None when unit_cost is None."""
+    def test_none_cost_raises(self, deterministic_ppd):
+        """Raises ValueError when unit_cost is None."""
         from nachfrage.decision import optimal_quantity
 
-        result = optimal_quantity(deterministic_ppd[:, 0], 5.0, None)
-        assert result == (None, None, None, None, None, None)
+        with pytest.raises(ValueError, match="unit_cost must be a number"):
+            optimal_quantity(deterministic_ppd[:, 0], 5.0, None)
 
-    def test_cost_exceeds_price_returns_none(self, deterministic_ppd):
-        """Returns all None when unit_cost >= price."""
+    def test_cost_exceeds_price_raises(self, deterministic_ppd):
+        """Raises ValueError when unit_cost >= price."""
         from nachfrage.decision import optimal_quantity
 
-        result = optimal_quantity(deterministic_ppd[:, 0], 5.0, 5.0)
-        assert result == (None, None, None, None, None, None)
+        with pytest.raises(ValueError, match="must be less than price"):
+            optimal_quantity(deterministic_ppd[:, 0], 5.0, 5.0)
 
-        result = optimal_quantity(deterministic_ppd[:, 0], 5.0, 8.0)
-        assert result == (None, None, None, None, None, None)
+        with pytest.raises(ValueError, match="must be less than price"):
+            optimal_quantity(deterministic_ppd[:, 0], 5.0, 8.0)
 
     def test_deterministic_demand(self, deterministic_ppd):
         """With all demand exactly 10, optimal q = 10."""
         from nachfrage.decision import optimal_quantity
 
         best_q, utility, sales, sellout, leftovers, profit = optimal_quantity(
-            deterministic_ppd[:, 0], price=5.0, unit_cost=2.0,
+            deterministic_ppd[:, 0],
+            price=5.0,
+            unit_cost=2.0,
         )
 
         assert best_q == 10
@@ -55,7 +56,9 @@ class TestOptimalQuantity:
         from nachfrage.decision import optimal_quantity
 
         best_q, utility, sales, sellout, leftovers, profit = optimal_quantity(
-            deterministic_ppd[:, 2], price=5.0, unit_cost=2.0,
+            deterministic_ppd[:, 2],
+            price=5.0,
+            unit_cost=2.0,
         )
 
         assert best_q == 0
@@ -67,7 +70,10 @@ class TestOptimalQuantity:
         from nachfrage.decision import optimal_quantity
 
         best_q, _, _, _, _, _ = optimal_quantity(
-            deterministic_ppd[:, 0], price=5.0, unit_cost=2.0, batch_size=4,
+            deterministic_ppd[:, 0],
+            price=5.0,
+            unit_cost=2.0,
+            batch_size=4,
         )
 
         assert best_q % 4 == 0
@@ -79,10 +85,16 @@ class TestOptimalQuantity:
         from nachfrage.decision import optimal_quantity
 
         best_q_no_penalty, _, _, _, _, _ = optimal_quantity(
-            deterministic_ppd[:, 0], price=5.0, unit_cost=2.0, waste_penalty=0,
+            deterministic_ppd[:, 0],
+            price=5.0,
+            unit_cost=2.0,
+            waste_penalty=0,
         )
         best_q_with_penalty, _, _, _, leftovers, _ = optimal_quantity(
-            deterministic_ppd[:, 0], price=5.0, unit_cost=2.0, waste_penalty=10,
+            deterministic_ppd[:, 0],
+            price=5.0,
+            unit_cost=2.0,
+            waste_penalty=10,
         )
 
         assert best_q_with_penalty <= best_q_no_penalty
@@ -94,7 +106,9 @@ class TestOptimalQuantity:
         from nachfrage.decision import optimal_quantity
 
         result = optimal_quantity(
-            deterministic_ppd[:, 0], price=5.0, unit_cost=2.0,
+            deterministic_ppd[:, 0],
+            price=5.0,
+            unit_cost=2.0,
         )
 
         best_q, utility, sales, sellout, leftovers, profit = result
@@ -112,7 +126,9 @@ class TestProfitProfile:
         from nachfrage.decision import profit_profile
 
         qs, utilities, sellout = profit_profile(
-            deterministic_ppd[:, 0], price=5.0, unit_cost=2.0,
+            deterministic_ppd[:, 0],
+            price=5.0,
+            unit_cost=2.0,
         )
 
         assert len(qs) == len(utilities) == len(sellout)
@@ -123,7 +139,9 @@ class TestProfitProfile:
         from nachfrage.decision import profit_profile
 
         qs, utilities, sellout = profit_profile(
-            deterministic_ppd[:, 0], price=5.0, unit_cost=2.0,
+            deterministic_ppd[:, 0],
+            price=5.0,
+            unit_cost=2.0,
         )
 
         diffs = np.diff(sellout)
@@ -134,7 +152,10 @@ class TestProfitProfile:
         from nachfrage.decision import profit_profile
 
         qs, _, _ = profit_profile(
-            deterministic_ppd[:, 0], price=5.0, unit_cost=2.0, batch_size=3,
+            deterministic_ppd[:, 0],
+            price=5.0,
+            unit_cost=2.0,
+            batch_size=3,
         )
 
         assert np.all(qs % 3 == 0)
@@ -144,7 +165,9 @@ class TestProfitProfile:
         from nachfrage.decision import profit_profile
 
         qs, _, _ = profit_profile(
-            deterministic_ppd[:, 0], price=5.0, unit_cost=2.0,
+            deterministic_ppd[:, 0],
+            price=5.0,
+            unit_cost=2.0,
         )
 
         assert qs[0] == 0

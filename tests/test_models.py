@@ -1,8 +1,6 @@
 """Tests for nachfrage.models — DemandModel lifecycle."""
 
-import json
 import warnings
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -36,7 +34,9 @@ def small_data(rng):
     true_mu = np.array([12.0, 8.0, 5.0])
     alpha = 5.0
 
-    demand = rng.negative_binomial(alpha, alpha / (alpha + true_mu), size=(n_per, n_products))
+    demand = rng.negative_binomial(
+        alpha, alpha / (alpha + true_mu), size=(n_per, n_products)
+    )
     prepared = np.ceil(demand * 1.2).astype(int)
 
     sold = demand.T.ravel()
@@ -44,11 +44,13 @@ def small_data(rng):
     censored = (sold >= prepared).astype(bool)
     sold[censored] = prepared[censored]
 
-    return pd.DataFrame({
-        "sold": sold,
-        "prepared": prepared,
-        "product": np.repeat(product_names, n_per),
-    })
+    return pd.DataFrame(
+        {
+            "sold": sold,
+            "prepared": prepared,
+            "product": np.repeat(product_names, n_per),
+        }
+    )
 
 
 @pytest.fixture
@@ -59,17 +61,21 @@ def tiny_data(rng):
     product_names = ["Cake A", "Cake B"]
     true_mu = np.array([10.0, 6.0])
     alpha = 5.0
-    demand = rng.negative_binomial(alpha, alpha / (alpha + true_mu), size=(n_per, n_products))
+    demand = rng.negative_binomial(
+        alpha, alpha / (alpha + true_mu), size=(n_per, n_products)
+    )
     prepared = np.ceil(demand * 1.3).astype(int)
     sold = demand.T.ravel()
     prepared = prepared.T.ravel()
     censored = (sold >= prepared).astype(bool)
     sold[censored] = prepared[censored]
-    return pd.DataFrame({
-        "sold": sold,
-        "prepared": prepared,
-        "product": np.repeat(product_names, n_per),
-    })
+    return pd.DataFrame(
+        {
+            "sold": sold,
+            "prepared": prepared,
+            "product": np.repeat(product_names, n_per),
+        }
+    )
 
 
 class TestDemandModelInit:
@@ -88,8 +94,9 @@ class TestDemandModelInit:
 
     def test_init_with_partial_override(self, model_config):
         """Custom config merges with defaults."""
-        from nachfrage.models import DemandModel
         from pymc_extras.prior import Prior
+
+        from nachfrage.models import DemandModel
 
         custom = DemandModel({"mu_global": Prior("Normal", mu=np.log(20), sigma=1.0)})
         assert custom.model_config is not None
@@ -150,11 +157,13 @@ class TestDemandModelBuild:
         censored = (sold >= prepared).astype(bool)
         sold[censored] = prepared[censored]
 
-        df = pd.DataFrame({
-            "sold": sold,
-            "prepared": prepared,
-            "product": ["Only Cake"] * n,
-        })
+        df = pd.DataFrame(
+            {
+                "sold": sold,
+                "prepared": prepared,
+                "product": ["Only Cake"] * n,
+            }
+        )
 
         dm = DemandModel(model_config)
         dm.build(df)

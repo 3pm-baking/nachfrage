@@ -1,13 +1,20 @@
 """Smoke tests for nachfrage.plot — matplotlib-based plotting."""
 
-import numpy as np
 import pytest
+import xarray as xr
 
 
 @pytest.fixture
 def ppd(rng):
-    """3 products, 1000 draws."""
-    return rng.negative_binomial(5, 0.2, size=(1000, 3))
+    """3 products, 1000 draws as xr.DataArray."""
+    product_names = ["Cheese Cake (slice)", "Apple Strudel (piece)", "Kolache (each)"]
+    values = rng.negative_binomial(5, 0.2, size=(1000, 3))
+    return xr.DataArray(
+        values,
+        dims=("sample", "product"),
+        coords={"product": product_names},
+        name="demand_ppd",
+    )
 
 
 @pytest.fixture
@@ -51,46 +58,35 @@ def raw_df():
     """Mock DataFrame for calibration tests."""
     import pandas as pd
 
-    return pd.DataFrame({
-        "product_key": ["Cheese Cake (slice)", "Apple Strudel (piece)"] * 5,
-        "prepared": [12, 10, 12, 10, 12, 10, 12, 10, 12, 10],
-        "sold_out": [True, False, False, True, False, False, True, False, False, False],
-    })
-
-
-class TestPlotForest:
-    def test_saves_file(self, ppd, product_keys, tmp_path):
-        """plot_forest writes a PNG file."""
-        from nachfrage.plot import plot_forest
-
-        path = tmp_path / "forest.png"
-        plot_forest(ppd, product_keys, "Test", path)
-
-        assert path.exists()
-        assert path.stat().st_size > 0
-
-
-class TestPlotTopDensities:
-    def test_saves_file(self, ppd, product_keys, tmp_path):
-        """plot_top_densities writes a PNG file."""
-        from nachfrage.plot import plot_top_densities
-
-        top = product_keys[:2]
-        path = tmp_path / "densities.png"
-        plot_top_densities(ppd, product_keys, top, "Test", path)
-
-        assert path.exists()
-        assert path.stat().st_size > 0
+    return pd.DataFrame(
+        {
+            "product_key": ["Cheese Cake (slice)", "Apple Strudel (piece)"] * 5,
+            "prepared": [12, 10, 12, 10, 12, 10, 12, 10, 12, 10],
+            "sold_out": [
+                True,
+                False,
+                False,
+                True,
+                False,
+                False,
+                True,
+                False,
+                False,
+                False,
+            ],
+        }
+    )
 
 
 class TestPlotSelloutCurves:
-    def test_saves_file(self, ppd, product_keys, tmp_path):
+    def test_saves_file(self, ppd, tmp_path):
         """plot_sellout_curves writes a PNG file."""
         from nachfrage.plot import plot_sellout_curves
 
-        top = product_keys[:2]
         path = tmp_path / "sellout.png"
-        plot_sellout_curves(ppd, product_keys, top, "Test", path)
+        plot_sellout_curves(
+            ppd.sel(product=ppd.coords["product"].values[:2]), "Test", path
+        )
 
         assert path.exists()
         assert path.stat().st_size > 0
@@ -102,7 +98,7 @@ class TestPlotCalibration:
         from nachfrage.plot import plot_calibration
 
         path = tmp_path / "calibration.png"
-        plot_calibration(raw_df, ppd, product_keys, "Test", path)
+        plot_calibration(raw_df, ppd.values, product_keys, "Test", path)
 
         assert path.exists()
         assert path.stat().st_size > 0
@@ -114,7 +110,7 @@ class TestPlotProfitCurves:
         from nachfrage.plot import plot_profit_curves
 
         path = tmp_path / "profit_curves.png"
-        plot_profit_curves(decisions, ppd, product_keys, "Test", path)
+        plot_profit_curves(decisions, ppd.values, product_keys, "Test", path)
 
         assert path.exists()
         assert path.stat().st_size > 0
@@ -138,7 +134,7 @@ class TestPlotWasteSensitivity:
         from nachfrage.plot import plot_waste_sensitivity
 
         path = tmp_path / "waste_sensitivity.png"
-        plot_waste_sensitivity(decisions, ppd, product_keys, "Test", path)
+        plot_waste_sensitivity(decisions, ppd.values, product_keys, "Test", path)
 
         assert path.exists()
         assert path.stat().st_size > 0

@@ -43,6 +43,7 @@ classifiers = [
 
 [project.optional-dependencies]
 plot = [
+    "arviz-plots[matplotlib]>=0.1.0",
     "matplotlib>=3.9.0",
 ]
 dev = [
@@ -65,7 +66,7 @@ packages = ["src/nachfrage"]
 package = true
 
 [dependency-groups]
-plot = ["matplotlib>=3.9.0"]
+plot = ["arviz-plots[matplotlib]>=0.1.0", "matplotlib>=3.9.0"]
 dev = ["pytest>=8.0.0", "ruff>=0.5.0", "nutpie>=0.14.0", "h5netcdf>=1.0.0", "h5py>=3.0.0"]
 
 [tool.ruff.lint]

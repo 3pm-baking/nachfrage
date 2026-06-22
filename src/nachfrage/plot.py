@@ -1,7 +1,8 @@
 """Matplotlib-based plotting for demand models.
 
 Requires matplotlib (install with `pip install nachfrage[plot]`).
-All functions accept numpy arrays and write to file paths.
+For forest plots and density visualizations, use `arviz_plots` directly
+(install with `pip install nachfrage[plot]` which includes `arviz-plots`).
 """
 
 from __future__ import annotations
@@ -11,156 +12,67 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 # Shared color palette
-COLORS = np.array([
-    "#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3",
-    "#a6d854", "#ffd92f", "#e5c494", "#b3b3b3",
-])
+COLORS = np.array(
+    [
+        "#66c2a5",
+        "#fc8d62",
+        "#8da0cb",
+        "#e78ac3",
+        "#a6d854",
+        "#ffd92f",
+        "#e5c494",
+        "#b3b3b3",
+    ]
+)
 
 
-def _sensible_max(ppd: np.ndarray, product_ids: list[int], percentile: int = 99, cap: int = 100) -> int:
+def _sensible_max(ppd_values: np.ndarray, percentile: int = 99, cap: int = 100) -> int:
     """Compute a reasonable x-axis maximum for demand histograms."""
-    vals = ppd[:, product_ids].ravel()
-    bound = int(np.percentile(vals, percentile)) + 5
+    bound = int(np.percentile(ppd_values.ravel(), percentile)) + 5
     return min(bound, cap)
 
 
-def plot_forest(
-    ppd: np.ndarray,
-    products: list[str],
-    label: str,
-    path: str | Path,
-) -> None:
-    """Forest plot of posterior predictive means with 94% HDI intervals.
-
-    Args:
-        ppd: Array of shape (n_samples, n_products).
-        products: List of product names.
-        label: Title label.
-        path: Output file path (PNG).
-    """
-    import arviz as az
-    import matplotlib.pyplot as plt
-
-    if len(products) == 0 or ppd.size == 0:
-        return
-
-    mu_mean = ppd.mean(axis=0)
-    mu_hdi = az.hdi(ppd.T, prob=0.94)
-    sort_idx = np.argsort(mu_mean)[::-1]
-    sorted_prods = [products[i] for i in sort_idx]
-
-    fig, ax = plt.subplots(figsize=(10, max(6, len(products) * 0.35)))
-    y_pos = np.arange(len(sorted_prods))
-
-    for i, pid in enumerate(sort_idx):
-        lo, hi = mu_hdi[pid]
-        m = mu_mean[pid]
-        ax.hlines(i, lo, hi, color="gray", linewidth=1.5)
-        ax.plot(m, i, "o", color="steelblue", markersize=6)
-
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(sorted_prods, fontsize=9)
-    ax.set_xlabel("Expected demand (94% HDI)", fontsize=12)
-    ax.set_title(f"Demand Estimates — {label}", fontsize=14, fontweight="bold")
-    ax.axvline(0, color="gray", linestyle="--", alpha=0.3)
-    ax.grid(axis="x", alpha=0.3)
-
-    fig.tight_layout()
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-
-def plot_top_densities(
-    ppd: np.ndarray,
-    products: list[str],
-    top: list[str],
-    label: str,
-    path: str | Path,
-) -> None:
-    """Overlaid density histograms for top products' posterior predictive.
-
-    Args:
-        ppd: Array of shape (n_samples, n_products).
-        products: All product names (for lookup).
-        top: Names of top products to highlight.
-        label: Title label.
-        path: Output file path (PNG).
-    """
-    import matplotlib.pyplot as plt
-
-    top_ids = [products.index(p) for p in top if p in products]
-    if not top_ids:
-        return
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    sensible_cap = _sensible_max(ppd, top_ids, percentile=99.5, cap=100)
-
-    for i, pid in enumerate(top_ids):
-        color = COLORS[i % len(COLORS)]
-        label_text = products[pid]
-        prod_max = min(int(np.percentile(ppd[:, pid], 99.5)) + 2, sensible_cap)
-        ax.hist(
-            ppd[:, pid],
-            bins=np.arange(0, prod_max + 2) - 0.5,
-            density=True,
-            alpha=0.5,
-            color=color,
-            label=label_text,
-            histtype="stepfilled",
-        )
-
-    ax.set_xlabel("Demand (units)", fontsize=12)
-    ax.set_ylabel("Density", fontsize=12)
-    ax.set_title(f"Posterior Predictive — {label}", fontsize=14, fontweight="bold")
-    ax.set_xlim(-0.5, sensible_cap)
-    ax.legend(fontsize=9, loc="upper right")
-    ax.grid(alpha=0.2)
-
-    fig.tight_layout()
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-
 def plot_sellout_curves(
-    ppd: np.ndarray,
-    products: list[str],
-    top: list[str],
-    label: str,
-    path: str | Path,
+    ppd: xr.DataArray,
+    label: str = "",
+    path: str | Path = "",
 ) -> None:
-    """Probability of selling out at each prep quantity for top products.
+    """Probability of selling out at each prep quantity, per product.
 
     Args:
-        ppd: Array of shape (n_samples, n_products).
-        products: All product names (for lookup).
-        top: Names of top products to plot.
+        ppd: xr.DataArray with dims ``(sample, product)``. The ``product``
+            coordinate provides line labels. Slice to the products you want
+            before calling.
         label: Title label.
         path: Output file path (PNG).
     """
     import matplotlib.pyplot as plt
     import matplotlib.ticker as mticker
 
-    top_ids = [products.index(p) for p in top if p in products]
-    if not top_ids:
+    ppd_values = ppd.values
+    product_names = list(ppd.coords["product"].values)
+    n_products = len(product_names)
+    if n_products == 0:
         return
 
-    max_n = int(ppd[:, top_ids].max()) + 5
+    max_n = int(ppd_values.max()) + 5
     n_range = np.arange(0, max_n + 1)
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    for i, pid in enumerate(top_ids):
+    for i in range(n_products):
         color = COLORS[i % len(COLORS)]
-        label_text = products[pid]
-        sellout_probs = np.array([(ppd[:, pid] >= n).mean() for n in n_range])
+        label_text = product_names[i]
+        sellout_probs = np.array([(ppd_values[:, i] >= n).mean() for n in n_range])
         ax.plot(n_range, sellout_probs, color=color, label=label_text, linewidth=2)
 
-    sensible_cap = _sensible_max(ppd, top_ids, percentile=99, cap=100)
+    sensible_cap = _sensible_max(ppd_values, percentile=99, cap=100)
     ax.set_xlabel("Quantity brought", fontsize=12)
     ax.set_ylabel("P(sell out)", fontsize=12)
     ax.set_title(f"Sellout Probability — {label}", fontsize=14, fontweight="bold")
@@ -198,12 +110,13 @@ def plot_calibration(
     key_to_idx = {k: i for i, k in enumerate(product_keys)}
     df["p_pred"] = df.apply(
         lambda r: (ppd[:, key_to_idx.get(r["product_key"], 0)] >= r["prepared"]).mean()
-        if r["product_key"] in key_to_idx else np.nan,
+        if r["product_key"] in key_to_idx
+        else np.nan,
         axis=1,
     )
 
     bins = np.arange(0, 1.05, 0.1)
-    bin_labels = [f"{b*100:.0f}-{(b+0.1)*100:.0f}%" for b in bins[:-1]]
+    bin_labels = [f"{b * 100:.0f}-{(b + 0.1) * 100:.0f}%" for b in bins[:-1]]
     df["p_bin"] = pd.cut(df["p_pred"], bins=bins, labels=bin_labels, right=False)
     cal = (
         df.groupby("p_bin", observed=True)
@@ -215,12 +128,14 @@ def plot_calibration(
         .reset_index()
     )
     cal["actual_lo"] = cal.apply(
-        lambda r: ((r["actual_rate"] * (1 - r["actual_rate"])) / max(r["n"], 1)) ** 0.5 * 1.96,
+        lambda r: ((r["actual_rate"] * (1 - r["actual_rate"])) / max(r["n"], 1)) ** 0.5
+        * 1.96,
         axis=1,
     )
     cal["actual_lo"] = (cal["actual_rate"] - cal["actual_lo"]).clip(0)
     cal["actual_hi"] = cal.apply(
-        lambda r: ((r["actual_rate"] * (1 - r["actual_rate"])) / max(r["n"], 1)) ** 0.5 * 1.96,
+        lambda r: ((r["actual_rate"] * (1 - r["actual_rate"])) / max(r["n"], 1)) ** 0.5
+        * 1.96,
         axis=1,
     )
     cal["actual_hi"] = (cal["actual_rate"] + cal["actual_hi"]).clip(upper=1)
@@ -231,14 +146,26 @@ def plot_calibration(
         if row["n"] == 0:
             continue
         ax1.errorbar(
-            row["mean_pred"], row["actual_rate"],
-            yerr=[[row["actual_rate"] - row["actual_lo"]], [row["actual_hi"] - row["actual_rate"]]],
-            fmt="o", color="steelblue", markersize=8, capsize=3, ecolor="gray",
-            elinewidth=1, alpha=0.8,
+            row["mean_pred"],
+            row["actual_rate"],
+            yerr=[
+                [row["actual_rate"] - row["actual_lo"]],
+                [row["actual_hi"] - row["actual_rate"]],
+            ],
+            fmt="o",
+            color="steelblue",
+            markersize=8,
+            capsize=3,
+            ecolor="gray",
+            elinewidth=1,
+            alpha=0.8,
         )
         ax1.annotate(
-            f"n={int(row['n'])}", (row["mean_pred"], row["actual_rate"]),
-            textcoords="offset points", xytext=(5, -10), fontsize=8,
+            f"n={int(row['n'])}",
+            (row["mean_pred"], row["actual_rate"]),
+            textcoords="offset points",
+            xytext=(5, -10),
+            fontsize=8,
         )
     ax1.set_xlabel("Mean predicted P(sell out)", fontsize=12)
     ax1.set_ylabel("Actual sellout rate", fontsize=12)
@@ -251,7 +178,14 @@ def plot_calibration(
 
     off = cal["actual_rate"] < cal["mean_pred"]
     colors = ["#d65f5f" if o else "#5fd65f" for o in off]
-    ax2.barh(range(len(cal)), cal["n"], color=colors, alpha=0.7, edgecolor="gray", linewidth=0.5)
+    ax2.barh(
+        range(len(cal)),
+        cal["n"],
+        color=colors,
+        alpha=0.7,
+        edgecolor="gray",
+        linewidth=0.5,
+    )
     ax2.set_yticks(range(len(cal)))
     ax2.set_yticklabels(cal["p_bin"], fontsize=8)
     ax2.set_xlabel("Observations", fontsize=12)
@@ -289,9 +223,9 @@ def plot_profit_curves(
         path: Output file path (PNG).
         waste_penalty: Waste aversion lambda for label.
     """
-    from nachfrage.decision import profit_profile
-
     import matplotlib.pyplot as plt
+
+    from nachfrage.decision import profit_profile
 
     top = sorted(
         [r for r in decisions if r.get("opt_profit") is not None],
@@ -304,7 +238,7 @@ def plot_profit_curves(
     axes = axes.ravel()
     key_to_idx = {k: i for i, k in enumerate(product_keys)}
 
-    for ax, row in zip(axes, top):
+    for ax, row in zip(axes, top, strict=False):
         pk = row["product_key"]
         pid = key_to_idx.get(pk)
         if pid is None:
@@ -315,25 +249,42 @@ def plot_profit_curves(
             or row.get("price") is None
             or row["cost"] >= row["price"]
         ):
-            ax.text(0.5, 0.5, "No valid cost/price", ha="center", va="center",
-                    transform=ax.transAxes)
+            ax.text(
+                0.5,
+                0.5,
+                "No valid cost/price",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
             continue
 
         batch_size = row.get("batch_size", 1)
-        qs, utilities, sellout = profit_profile(
-            ppd[:, pid], row["price"], row["cost"],
-            batch_size=batch_size, waste_penalty=waste_penalty,
+        prof = profit_profile(
+            ppd[:, pid],
+            row["price"],
+            row["cost"],
+            batch_size=batch_size,
+            waste_penalty=waste_penalty,
         )
+        qs = prof.quantities
+        utilities = prof.utilities
         opt_q = int(row["opt_qty"])
         current_q = int(row.get("current_qty", 0))
         y_label = "Expected utility ($)" if waste_penalty > 0 else "Expected profit ($)"
 
         ax.plot(qs, utilities, color="steelblue", linewidth=2)
-        ax.axvline(opt_q, color="green", linestyle="--", alpha=0.7,
-                   label=f"Optimal ({opt_q})")
+        ax.axvline(
+            opt_q, color="green", linestyle="--", alpha=0.7, label=f"Optimal ({opt_q})"
+        )
         if current_q and current_q != opt_q:
-            ax.axvline(current_q, color="red", linestyle=":", alpha=0.5,
-                       label=f"Current ({current_q})")
+            ax.axvline(
+                current_q,
+                color="red",
+                linestyle=":",
+                alpha=0.5,
+                label=f"Current ({current_q})",
+            )
 
         ax.scatter([opt_q], [utilities[qs == opt_q][0]], color="green", s=50, zorder=5)
         ax.set_title(f"{pk.split(' (')[0]} ({pk.split('(')[-1]}", fontsize=9)
@@ -369,7 +320,8 @@ def plot_optimal_grid(
     import matplotlib.pyplot as plt
 
     valid = [
-        r for r in decisions
+        r
+        for r in decisions
         if r.get("opt_qty") is not None
         and r.get("price")
         and r.get("cost")
@@ -386,10 +338,22 @@ def plot_optimal_grid(
     y = np.arange(len(df))
     height = 0.35
 
-    ax.barh(y + height / 2, df["current_qty"], height, label="Current",
-            color="lightcoral", alpha=0.7)
-    ax.barh(y - height / 2, df["opt_qty"], height, label="Optimal",
-            color="steelblue", alpha=0.8)
+    ax.barh(
+        y + height / 2,
+        df["current_qty"],
+        height,
+        label="Current",
+        color="lightcoral",
+        alpha=0.7,
+    )
+    ax.barh(
+        y - height / 2,
+        df["opt_qty"],
+        height,
+        label="Optimal",
+        color="steelblue",
+        alpha=0.8,
+    )
 
     ax.set_yticks(y)
     ax.set_yticklabels(df["name"], fontsize=8)
@@ -419,13 +383,17 @@ def plot_waste_sensitivity(
         label: Title label.
         path: Output file path (PNG).
     """
-    from nachfrage.decision import optimal_quantity
-
     import matplotlib.pyplot as plt
+
+    from nachfrage.decision import optimal_quantity
 
     key_to_idx = {k: i for i, k in enumerate(product_keys)}
     high_cost = sorted(
-        [r for r in decisions if r.get("cost") and r.get("price") and r["cost"] < r["price"]],
+        [
+            r
+            for r in decisions
+            if r.get("cost") and r.get("price") and r["cost"] < r["price"]
+        ],
         key=lambda r: r["opt_profit"],
     )[-8:]
 
@@ -441,8 +409,11 @@ def plot_waste_sensitivity(
         opt_qs = []
         for lam in lambdas:
             best_q, _, _, _, _, _ = optimal_quantity(
-                ppd[:, pid], row["price"], row["cost"],
-                row.get("batch_size", 1), waste_penalty=lam,
+                ppd[:, pid],
+                row["price"],
+                row["cost"],
+                row.get("batch_size", 1),
+                waste_penalty=lam,
             )
             opt_qs.append(best_q if best_q is not None else 0)
 
@@ -451,7 +422,9 @@ def plot_waste_sensitivity(
 
     ax.set_xlabel("Waste-aversion λ ($/leftover unit)", fontsize=12)
     ax.set_ylabel("Optimal prep quantity", fontsize=12)
-    ax.set_title(f"Waste-Aversion Sensitivity — {label}", fontsize=14, fontweight="bold")
+    ax.set_title(
+        f"Waste-Aversion Sensitivity — {label}", fontsize=14, fontweight="bold"
+    )
     ax.legend(fontsize=8, loc="upper right", ncol=2)
     ax.grid(alpha=0.2)
     ax.set_xticks(lambdas)

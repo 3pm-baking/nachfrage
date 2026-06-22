@@ -5,8 +5,48 @@ Pure NumPy functions: no file I/O, no database lookups, no PyMC imports.
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import numpy as np
 import pandas as pd
+
+
+class NewsvendorResult(NamedTuple):
+    """Result from optimal_quantity().
+
+    Immutable, with named field access and backward-compatible tuple unpacking.
+
+    Fields:
+        best_q: Optimal quantity (multiple of batch_size).
+        utility: Expected utility at best_q.
+        expected_sales: Expected units sold at best_q.
+        sellout_prob: P(sell out) at best_q.
+        expected_leftovers: Expected leftover units at best_q.
+        profit: Expected profit at best_q.
+    """
+
+    best_q: int | None
+    utility: float | None
+    expected_sales: float | None
+    sellout_prob: float | None
+    expected_leftovers: float | None
+    profit: float | None
+
+
+class ProfitProfile(NamedTuple):
+    """Result from profit_profile().
+
+    Immutable, with named field access and backward-compatible tuple unpacking.
+
+    Fields:
+        quantities: Array of prep quantities evaluated.
+        utilities: Expected utility at each quantity.
+        sellout_probs: P(sell out) at each quantity.
+    """
+
+    quantities: np.ndarray
+    utilities: np.ndarray
+    sellout_probs: np.ndarray
 
 
 def optimal_quantity(
@@ -15,7 +55,7 @@ def optimal_quantity(
     unit_cost: float | None,
     batch_size: int = 1,
     waste_penalty: float = 0,
-) -> tuple[int | None, float | None, float | None, float | None, float | None, float | None]:
+) -> NewsvendorResult:
     """Find the quantity Q that maximizes expected utility, constrained to batch multiples.
 
     Expected Utility(Q) = E[min(D, Q)] * price - Q * unit_cost
@@ -32,24 +72,29 @@ def optimal_quantity(
         waste_penalty: Subjective cost per leftover unit (λ).
 
     Returns:
-        tuple of (best_q, expected_utility, expected_sales, sellout_prob,
-                  expected_leftovers, expected_profit).
-        Returns all None when price or cost are invalid.
+        NewsvendorResult with fields: best_q, utility, expected_sales,
+        sellout_prob, expected_leftovers, profit.
+
+    Raises:
+        ValueError: If price or unit_cost is None, or unit_cost >= price.
     """
-    if price is None or unit_cost is None or unit_cost >= price:
-        return None, None, None, None, None, None
+    if price is None:
+        raise ValueError("price must be a number, got None")
+    if unit_cost is None:
+        raise ValueError("unit_cost must be a number, got None")
+    if unit_cost >= price:
+        raise ValueError(f"unit_cost ({unit_cost}) must be less than price ({price})")
 
     max_q = int(np.percentile(ppd_col, 99)) + 5
     max_q = min(max_q, 200)
     max_q = ((max_q + batch_size - 1) // batch_size) * batch_size
 
     qs = np.arange(0, max_q + 1, batch_size)
-    utility = np.zeros_like(qs, dtype=float)
-
-    for j, q in enumerate(qs):
-        sales = np.minimum(ppd_col, q)
-        waste = np.maximum(q - ppd_col, 0)
-        utility[j] = sales.mean() * price - q * unit_cost - waste.mean() * waste_penalty
+    sales = np.minimum(ppd_col[:, None], qs)
+    waste = np.maximum(qs - ppd_col[:, None], 0)
+    utility = (
+        sales.mean(axis=0) * price - qs * unit_cost - waste.mean(axis=0) * waste_penalty
+    )
 
     best_idx = int(np.argmax(utility))
     best_q = int(qs[best_idx])
@@ -60,7 +105,14 @@ def optimal_quantity(
     sellout_prob = float((ppd_col >= best_q).mean())
     profit_at_best = float(sales_at_best * price - best_q * unit_cost)
 
-    return best_q, best_utility, sales_at_best, sellout_prob, waste_at_best, profit_at_best
+    return NewsvendorResult(
+        best_q,
+        best_utility,
+        sales_at_best,
+        sellout_prob,
+        waste_at_best,
+        profit_at_best,
+    )
 
 
 def profit_profile(
@@ -70,7 +122,7 @@ def profit_profile(
     max_q: int | None = None,
     batch_size: int = 1,
     waste_penalty: float = 0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> ProfitProfile:
     """Compute expected utility and P(sell out) for every batch-constrained quantity.
 
     Args:
@@ -82,21 +134,25 @@ def profit_profile(
         waste_penalty: Subjective cost per leftover unit.
 
     Returns:
-        tuple of (quantities, expected_utilities, sellout_probabilities).
+        ProfitProfile with fields: quantities, utilities, sellout_probs.
     """
     if max_q is None:
         max_q = min(int(np.percentile(ppd_col, 99)) + 5, 200)
         max_q = ((max_q + batch_size - 1) // batch_size) * batch_size
 
     qs = np.arange(0, max_q + 1, batch_size)
-    utilities = np.array([
-        (np.minimum(ppd_col, q).mean() * price
-         - q * unit_cost
-         - np.maximum(q - ppd_col, 0).mean() * waste_penalty)
-        for q in qs
-    ])
+    utilities = np.array(
+        [
+            (
+                np.minimum(ppd_col, q).mean() * price
+                - q * unit_cost
+                - np.maximum(q - ppd_col, 0).mean() * waste_penalty
+            )
+            for q in qs
+        ]
+    )
     sellout = np.array([float((ppd_col >= q).mean()) for q in qs])
-    return qs, utilities, sellout
+    return ProfitProfile(qs, utilities, sellout)
 
 
 def waste_sensitivity(
@@ -119,16 +175,22 @@ def waste_sensitivity(
     lambdas = [0, 1, 2, 3, 5, 10]
     results = []
     for lam in lambdas:
-        best_q, utility, sales, sellout, leftovers, profit = optimal_quantity(
-            ppd_col, price, unit_cost, batch_size, waste_penalty=lam,
+        result = optimal_quantity(
+            ppd_col,
+            price,
+            unit_cost,
+            batch_size,
+            waste_penalty=lam,
         )
-        if best_q is None:
+        if result.best_q is None:
             continue
-        results.append({
-            "lambda": lam,
-            "opt_q": best_q,
-            "leftovers": leftovers,
-            "profit": profit,
-            "sellout": sellout,
-        })
+        results.append(
+            {
+                "lambda": lam,
+                "opt_q": result.best_q,
+                "leftovers": result.expected_leftovers,
+                "profit": result.profit,
+                "sellout": result.sellout_prob,
+            }
+        )
     return pd.DataFrame(results)

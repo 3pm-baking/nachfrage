@@ -17,7 +17,6 @@ import arviz as az
 import numpy as np
 import pandas as pd
 import pymc as pm
-import pytensor.tensor as pt
 import xarray as xr
 from pymc_extras.prior import Censored, Prior
 
@@ -40,7 +39,7 @@ class DemandModel:
 
     Lifecycle:
         >>> model = DemandModel(model_config={...})
-        >>> model.build(data=df)  # df has columns: sold, prepared, censored, product
+        >>> model.build(data=df)  # df has columns: sold, prepared, product
         >>> model.fit(draws=1000, tune=1000, chains=4)
         >>> ppd = model.sample_posterior_predictive(n_samples=10000)
         >>> model.to_netcdf("posterior.nc")
@@ -105,7 +104,9 @@ class DemandModel:
 
         with pm.Model(coords=coords) as model:
             mu_global = self.model_config["mu_global"].create_variable("mu_global")
-            sigma_product = self.model_config["sigma_product"].create_variable("sigma_product")
+            sigma_product = self.model_config["sigma_product"].create_variable(
+                "sigma_product"
+            )
             mu_product_raw = self.model_config["mu_product_raw"].create_variable(
                 "mu_product_raw",
             )
@@ -122,7 +123,9 @@ class DemandModel:
             self.model_config["likelihood"].upper = upper
 
             self.model_config["likelihood"].create_likelihood_variable(
-                "demand", mu=mu_obs, observed=sold_arr,
+                "demand",
+                mu=mu_obs,
+                observed=sold_arr,
             )
 
         self.model = model
@@ -214,8 +217,8 @@ class DemandModel:
         rng = np.random.default_rng(seed)
         idx = rng.integers(0, n_total, size=n_samples)
 
-        mu_s = mu_stacked.values[idx]           # (n_samples, n_products)
-        alpha_s = alpha_stacked.values[idx]     # (n_samples,)
+        mu_s = mu_stacked.values[idx]  # (n_samples, n_products)
+        alpha_s = alpha_stacked.values[idx]  # (n_samples,)
         p = alpha_s[:, None] / (alpha_s[:, None] + mu_s)
         ppd_vals = rng.negative_binomial(alpha_s[:, None], p)
 
@@ -244,9 +247,7 @@ class DemandModel:
             RuntimeError: If idata is not available.
         """
         if self.idata is None:
-            raise RuntimeError(
-                "No posterior to save. Call fit() first."
-            )
+            raise RuntimeError("No posterior to save. Call fit() first.")
 
         idata = self.idata.copy()
         if self.product_names:

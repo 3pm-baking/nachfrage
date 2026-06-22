@@ -72,7 +72,7 @@ def format_results_table(
         mu_samples = mu_samples.reshape(-1, mu_samples.shape[-1])
         alpha_samples = alpha_samples.reshape(-1)
     except Exception:
-        return f"Results unavailable — idata missing expected variables."
+        return "Results unavailable — idata missing expected variables."
 
     lines = []
     lines.append("=" * 78)
@@ -87,10 +87,7 @@ def format_results_table(
         n_cens = df.get("sold_out", pd.Series([False] * len(df))).sum()
 
     n_obs = len(df)
-    lines.append(
-        f"Censored (sellout):    {n_cens} "
-        f"({n_cens / n_obs * 100:.0f}%)"
-    )
+    lines.append(f"Censored (sellout):    {n_cens} ({n_cens / n_obs * 100:.0f}%)")
     lines.append(
         f"Uncensored (leftover): {n_obs - n_cens} "
         f"({(n_obs - n_cens) / n_obs * 100:.0f}%)"
@@ -123,25 +120,22 @@ def format_results_table(
         obs = len(sub)
         m = mu_mean[pid]
         lo, hi = mu_hdi[pid]
-        lines.append(
-            f"{pk:<52} {obs:>3} {cens:>3} "
-            f"{m:>7.1f} {lo:>8.1f} {hi:>8.1f}"
-        )
+        lines.append(f"{pk:<52} {obs:>3} {cens:>3} {m:>7.1f} {lo:>8.1f} {hi:>8.1f}")
 
     lines.append("")
     α_mean = float(alpha_samples.mean())
     α_hdi = az.hdi(alpha_samples, prob=0.94)
     lines.append(
-        f"Overdispersion α = {α_mean:.2f}  "
-        f"(94% HDI: [{α_hdi[0]:.2f}, {α_hdi[1]:.2f}])"
+        f"Overdispersion α = {α_mean:.2f}  (94% HDI: [{α_hdi[0]:.2f}, {α_hdi[1]:.2f}])"
     )
-    lines.append(
-        "  α → ∞ = Poisson (no overdispersion); "
-        "lower α = more overdispersion"
-    )
+    lines.append("  α → ∞ = Poisson (no overdispersion); lower α = more overdispersion")
 
-    ess = az.ess(idata, var_names=["mu_global", "sigma_product", "demand_alpha", "mu_product"])
-    rhat = az.rhat(idata, var_names=["mu_global", "sigma_product", "demand_alpha", "mu_product"])
+    ess = az.ess(
+        idata, var_names=["mu_global", "sigma_product", "demand_alpha", "mu_product"]
+    )
+    rhat = az.rhat(
+        idata, var_names=["mu_global", "sigma_product", "demand_alpha", "mu_product"]
+    )
     ess_vals = [np.asarray(v).min() for v in ess.values()]
     rhat_vals = [np.asarray(v).max() for v in rhat.values()]
     lines.append("\nConvergence:")

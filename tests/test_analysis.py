@@ -1,7 +1,5 @@
 """Tests for nachfrage.analysis — text table formatters."""
 
-import numpy as np
-import pandas as pd
 import pytest
 
 

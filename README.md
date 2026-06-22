@@ -18,7 +18,6 @@ pip install nachfrage[plot]
 import numpy as np
 import pandas as pd
 from nachfrage import DemandModel, optimal_quantity
-from nachfrage.plot import plot_forest
 
 # --- Fake demand data: 3 products, 10 market days each ---
 rng = np.random.default_rng(42)
@@ -62,18 +61,24 @@ print(ppd.coords["product"].values)
 
 # --- Newsvendor optimization ---
 pid = 0  # Cheese Cake
-best_q, utility, sales, sellout, leftovers, profit = optimal_quantity(
+r = optimal_quantity(
     ppd.values[:, pid], price=5.0, unit_cost=2.0, batch_size=1,
 )
-print(f"Optimal prep: {best_q}, expected profit: ${profit:.2f}")
+print(f"Optimal prep: {r.best_q}, expected profit: ${r.profit:.2f}")
 
 # --- Save and reload ---
 model.to_netcdf("posterior.nc")
 loaded = DemandModel.from_netcdf("posterior.nc")
 ppd_reloaded = loaded.sample_posterior_predictive(n_samples=10000)
 
-# --- Plot (requires nachfrage[plot]) ---
-plot_forest(ppd.values, product_names, "All Markets", "forest.png")
+# --- Plotting (delegate to arviz_plots) ---
+import arviz_plots as azp
+import matplotlib.pyplot as plt
+import xarray as xr
+
+dt = xr.DataTree({"demand": ppd})
+azp.plot_forest(dt, var_names=["demand"])
+plt.savefig("forest.png", dpi=150, bbox_inches="tight")
 ```
 
 ## Model
@@ -111,7 +116,7 @@ model = DemandModel(model_config={
 | `nachfrage.decision` | `optimal_quantity`, `profit_profile`, `waste_sensitivity` | Newsvendor optimization |
 | `nachfrage.posterior` | `compute_ppd` | Standalone PPD computation |
 | `nachfrage.analysis` | `format_scenarios`, `format_results_table` | Text tables |
-| `nachfrage.plot` | `plot_forest`, `plot_calibration`, `plot_profit_curves`, ... | Matplotlib figures |
+| `nachfrage.plot` | `plot_sellout_curves`, `plot_calibration`, `plot_profit_curves`, ... | Application-specific matplotlib figures |
 
 ### DemandModel lifecycle
 
