@@ -47,7 +47,6 @@ def small_data(rng):
     return pd.DataFrame({
         "sold": sold,
         "prepared": prepared,
-        "censored": censored,
         "product": np.repeat(product_names, n_per),
     })
 
@@ -69,7 +68,6 @@ def tiny_data(rng):
     return pd.DataFrame({
         "sold": sold,
         "prepared": prepared,
-        "censored": censored,
         "product": np.repeat(product_names, n_per),
     })
 
@@ -128,7 +126,7 @@ class TestDemandModelBuild:
         from nachfrage.models import DemandModel
 
         dm = DemandModel(model_config)
-        bad_df = pd.DataFrame({"sold": [1, 2, 3], "other": [4, 5, 6]})
+        bad_df = pd.DataFrame({"sold": [1, 2, 3]})
         with pytest.raises(ValueError):
             dm.build(bad_df)
 
@@ -155,7 +153,6 @@ class TestDemandModelBuild:
         df = pd.DataFrame({
             "sold": sold,
             "prepared": prepared,
-            "censored": censored,
             "product": ["Only Cake"] * n,
         })
 

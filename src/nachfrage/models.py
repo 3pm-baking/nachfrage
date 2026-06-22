@@ -71,9 +71,8 @@ class DemandModel:
 
         Args:
             data: DataFrame with columns:
-                - sold: Observed sales per market day.
+                - sold: Observed sales per market day (capped at prepared).
                 - prepared: Units prepared per market day.
-                - censored: Boolean — True if sellout (demand >= prepared).
                 - product: Product name for each observation.
 
         Returns:
@@ -82,7 +81,7 @@ class DemandModel:
         Raises:
             ValueError: If required columns are missing.
         """
-        required = {"sold", "prepared", "censored", "product"}
+        required = {"sold", "prepared", "product"}
         missing = required - set(data.columns)
         if missing:
             raise ValueError(
@@ -92,7 +91,6 @@ class DemandModel:
 
         sold_arr = data["sold"].values.astype(float)
         prepared_arr = data["prepared"].values.astype(float)
-        censored_arr = data["censored"].values.astype(bool)
 
         codes, unique_names = pd.factorize(data["product"])
         product_names = unique_names.tolist()
@@ -120,7 +118,7 @@ class DemandModel:
 
             mu_obs = mu_product[product_id_arr]
 
-            upper = pt.switch(censored_arr, prepared_arr, np.inf)
+            upper = prepared_arr
             self.model_config["likelihood"].upper = upper
 
             self.model_config["likelihood"].create_likelihood_variable(

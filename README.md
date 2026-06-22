@@ -39,16 +39,15 @@ sold[censored] = prepared[censored]
 df = pd.DataFrame({
     "sold": sold,
     "prepared": prepared,
-    "censored": censored,
     "product": np.repeat(product_names, n_per),
 })
 print(df.head())
-#    sold  prepared  censored                     product
-# 0  12.0      15.0     False  Cheese Cake (slice)
-# 1   9.0      12.0     False  Cheese Cake (slice)
-# 2  13.0      16.0     False  Cheese Cake (slice)
-# 3   9.0      16.0     False  Cheese Cake (slice)
-# 4   7.0      12.0     False  Cheese Cake (slice)
+#    sold  prepared                product
+# 0  12.0      15.0  Cheese Cake (slice)
+# 1   9.0      12.0  Cheese Cake (slice)
+# 2  13.0      16.0  Cheese Cake (slice)
+# 3   9.0      16.0  Cheese Cake (slice)
+# 4   7.0      12.0  Cheese Cake (slice)
 
 # --- Build and fit the model ---
 model = DemandModel()
@@ -118,7 +117,7 @@ model = DemandModel(model_config={
 
 ```python
 model = DemandModel(model_config={...})
-model.build(df)  # df has columns: sold, prepared, censored, product
+model.build(df)  # df has columns: sold, prepared, product
 model.fit(draws=1000, tune=1000, chains=4)
 ppd = model.sample_posterior_predictive(n_samples=10000)
 model.to_netcdf("posterior.nc")      # save
