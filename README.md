@@ -34,7 +34,7 @@ prepared = prepared.T.ravel()
 product_ids = np.repeat(np.arange(n_products), n_per)
 censored = (sold >= prepared).astype(bool)
 sold[censored] = prepared[censored]
-product_names = ["Cheese Cake (slice)", "Apple Strudel (piece)", "Kolache (each)"]
+product_names = ["Cheese Cake (slice)", "Apple Strudel (piece)", "Bienenstich (slice)"]
 
 # --- Build and fit the model ---
 model = DemandModel()
