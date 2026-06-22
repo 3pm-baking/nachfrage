@@ -233,7 +233,7 @@ class DemandModel:
             name="demand_ppd",
         )
 
-    def to_netcdf(self, path: str | Path) -> None:
+    def to_netcdf(self, path: str | Path, engine: str | None = None) -> None:
         """Save posterior inference data to a netCDF file.
 
         Product names are stored in the DataTree attrs so they survive
@@ -241,6 +241,8 @@ class DemandModel:
 
         Args:
             path: File path for the netCDF output.
+            engine: NetCDF backend. One of "netcdf4", "h5netcdf", "scipy",
+                or None for auto-detect.
 
         Raises:
             RuntimeError: If idata is not available.
@@ -253,7 +255,7 @@ class DemandModel:
         idata = self.idata.copy()
         if self.product_names:
             idata.attrs["product_names"] = json.dumps(self.product_names)
-        idata.to_netcdf(str(path))
+        idata.to_netcdf(str(path), engine=engine)
 
     @classmethod
     def from_idata(
