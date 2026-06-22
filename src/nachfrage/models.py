@@ -1,7 +1,7 @@
 """Bayesian demand model with censored NegativeBinomial likelihood.
 
 The DemandModel class encapsulates the full lifecycle:
-    build → fit → compute_ppd → save/load
+    build → fit → sample_posterior_predictive → save/load
 
 The model is a hierarchical NegativeBinomial with product-level random effects,
 right-censored at the prepared quantity (for sellout observations).
@@ -44,7 +44,7 @@ class DemandModel:
         >>> model.build(sold=sold, prepared=prepared, censored=censored,
         ...             product_ids=product_ids, product_names=product_names)
         >>> model.fit(draws=1000, tune=1000, chains=4)
-        >>> ppd = model.compute_ppd(n_samples=10000)
+        >>> ppd = model.sample_posterior_predictive(n_samples=10000)
         >>> model.to_netcdf("posterior.nc")
         >>> loaded = DemandModel.from_netcdf("posterior.nc")
 
@@ -65,7 +65,7 @@ class DemandModel:
             **(model_config or {}),
         }
         self.model: pm.Model | None = None
-        self.idata: az.InferenceData | None = None
+        self.idata: xr.DataTree | None = None
         self.product_names: list[str] | None = None
 
     def build(
@@ -108,26 +108,25 @@ class DemandModel:
         }
 
         with pm.Model(coords=coords) as model:
-            μ_global = self.model_config["mu_global"].create_variable("μ_global")
-            σ_product = self.model_config["sigma_product"].create_variable("σ_product")
-            μ_product_raw = self.model_config["mu_product_raw"].create_variable(
-                "μ_product_raw",
+            mu_global = self.model_config["mu_global"].create_variable("mu_global")
+            sigma_product = self.model_config["sigma_product"].create_variable("sigma_product")
+            mu_product_raw = self.model_config["mu_product_raw"].create_variable(
+                "mu_product_raw",
             )
 
-            μ_product = pm.Deterministic(
-                "μ_product",
-                pm.math.exp(μ_global + μ_product_raw * σ_product),
+            mu_product = pm.Deterministic(
+                "mu_product",
+                pm.math.exp(mu_global + mu_product_raw * sigma_product),
                 dims="product",
             )
 
-            μ_obs = μ_product[product_id_arr]
+            mu_obs = mu_product[product_id_arr]
 
-            # Set the data-dependent upper bound on the Censored config
             upper = pt.switch(censored_arr, prepared_arr, np.inf)
             self.model_config["likelihood"].upper = upper
 
             self.model_config["likelihood"].create_likelihood_variable(
-                "demand", mu=μ_obs, observed=sold_arr,
+                "demand", mu=mu_obs, observed=sold_arr,
             )
 
         self.model = model
@@ -143,7 +142,7 @@ class DemandModel:
         random_seed: int = 42,
         progressbar: bool = False,
         **kwargs: Any,
-    ) -> az.InferenceData:
+    ) -> xr.DataTree:
         """Sample the posterior distribution.
 
         Args:
@@ -156,7 +155,7 @@ class DemandModel:
             **kwargs: Additional arguments passed to pm.sample().
 
         Returns:
-            ArviZ InferenceData with posterior samples.
+            xarray DataTree with posterior samples.
 
         Raises:
             RuntimeError: If build() has not been called.
@@ -164,31 +163,34 @@ class DemandModel:
         if self.model is None:
             raise RuntimeError("Call build() before fit()")
 
-        with self.model:
-            self.idata = pm.sample(
-                draws=draws,
-                tune=tune,
-                chains=chains,
-                nuts_sampler=nuts_sampler,
-                random_seed=random_seed,
-                progressbar=progressbar,
-                **kwargs,
-            )
+        self.idata = pm.sample(
+            draws=draws,
+            tune=tune,
+            chains=chains,
+            nuts_sampler=nuts_sampler,
+            random_seed=random_seed,
+            progressbar=progressbar,
+            model=self.model,
+            **kwargs,
+        )
 
         return self.idata
 
-    def compute_ppd(
+    def sample_posterior_predictive(
         self,
         n_samples: int = 10000,
         seed: int = 42,
     ) -> xr.DataArray:
-        """Compute posterior predictive distribution.
+        """Draw posterior predictive demand samples.
 
-        Samples from NegativeBinomial(mu, alpha) using the posterior draws
+        Samples from NegativeBinomial(mu, alpha) using posterior draws
         of mu (per product) and alpha (global overdispersion).
 
+        Uses xarray's stack to flatten chain/draw dimensions, then
+        NumPy for the random number generation over the stacked samples.
+
         Args:
-            n_samples: Number of PPD draws.
+            n_samples: Number of posterior predictive draws.
             seed: Random seed for reproducibility.
 
         Returns:
@@ -203,22 +205,23 @@ class DemandModel:
                 "No posterior samples available. Call fit() or from_netcdf() first."
             )
 
-        mu = self.idata.posterior["μ_product"]
+        mu = self.idata.posterior["mu_product"]
         alpha = self.idata.posterior["demand_alpha"]
 
-        # mu: (chain, draw, product), alpha: (chain, draw)
-        n_chains = mu.sizes["chain"]
-        n_draws = mu.sizes["draw"]
-        n_products = mu.sizes["product"]
+        # Stack chain + draw into a single sample dimension
+        mu_stacked = mu.stack(sample=("chain", "draw")).transpose("sample", "product")
+        alpha_stacked = alpha.stack(sample=("chain", "draw"))
+
+        n_total = mu_stacked.sizes["sample"]
+        n_products = mu_stacked.sizes["product"]
 
         rng = np.random.default_rng(seed)
-        mu_flat = mu.values.reshape(n_chains * n_draws, n_products)
-        alpha_flat = alpha.values.reshape(n_chains * n_draws)
+        idx = rng.integers(0, n_total, size=n_samples)
 
-        idx = rng.integers(0, len(alpha_flat), size=n_samples)
-        alpha_s = alpha_flat[idx, None]
-        p = alpha_s / (alpha_s + mu_flat[idx])
-        ppd_vals = rng.negative_binomial(alpha_s, p)
+        mu_s = mu_stacked.values[idx]           # (n_samples, n_products)
+        alpha_s = alpha_stacked.values[idx]     # (n_samples,)
+        p = alpha_s[:, None] / (alpha_s[:, None] + mu_s)
+        ppd_vals = rng.negative_binomial(alpha_s[:, None], p)
 
         return xr.DataArray(
             ppd_vals,
@@ -231,9 +234,9 @@ class DemandModel:
         )
 
     def to_netcdf(self, path: str | Path) -> None:
-        """Save posterior InferenceData to a netCDF file.
+        """Save posterior inference data to a netCDF file.
 
-        Product names are stored in the InferenceData attrs so they survive
+        Product names are stored in the DataTree attrs so they survive
         the roundtrip through from_netcdf().
 
         Args:
@@ -253,27 +256,25 @@ class DemandModel:
         idata.to_netcdf(str(path), engine="h5netcdf")
 
     @classmethod
-    def from_netcdf(
+    def from_idata(
         cls,
-        path: str | Path,
+        idata: xr.DataTree,
         model_config: dict[str, Any] | None = None,
     ) -> DemandModel:
-        """Load a previously saved model from a netCDF file.
+        """Create a DemandModel from an existing xarray DataTree.
 
         Returns a lightweight instance without a PyMC model graph — suitable
-        for compute_ppd() and prediction, but not for fit() (call build() and
-        fit() again to continue sampling).
+        for sample_posterior_predictive() and prediction, but not for fit()
+        (call build() and fit() again to continue sampling).
 
         Args:
-            path: Path to the netCDF file written by to_netcdf().
-            model_config: Optional model config override. If None, the
-                default config is used.
+            idata: xarray DataTree with posterior samples and optional
+                "product_names" attr.
+            model_config: Optional model config override.
 
         Returns:
             DemandModel with idata and product_names loaded.
         """
-        idata = az.from_netcdf(str(path))
-
         product_names_str = idata.attrs.pop("product_names", "[]")
         try:
             product_names = json.loads(product_names_str)
@@ -284,3 +285,23 @@ class DemandModel:
         inst.idata = idata
         inst.product_names = product_names or None
         return inst
+
+    @classmethod
+    def from_netcdf(
+        cls,
+        path: str | Path,
+        model_config: dict[str, Any] | None = None,
+    ) -> DemandModel:
+        """Load a previously saved model from a netCDF file.
+
+        Delegates to from_idata() after reading the file.
+
+        Args:
+            path: Path to the netCDF file written by to_netcdf().
+            model_config: Optional model config override.
+
+        Returns:
+            DemandModel with idata and product_names loaded.
+        """
+        idata = az.from_netcdf(str(path))
+        return cls.from_idata(idata, model_config=model_config)

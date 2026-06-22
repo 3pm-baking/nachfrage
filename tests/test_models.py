@@ -191,10 +191,10 @@ class TestDemandModelFit:
         assert "/posterior" in dm.idata.groups
 
         posterior = dm.idata.posterior
-        assert "μ_global" in posterior.data_vars
-        assert "σ_product" in posterior.data_vars
+        assert "mu_global" in posterior.data_vars
+        assert "sigma_product" in posterior.data_vars
         assert "demand_alpha" in posterior.data_vars
-        assert "μ_product" in posterior.data_vars
+        assert "mu_product" in posterior.data_vars
 
     def test_fit_with_nutpie_sampler(self, tiny_data, model_config):
         """fit() works with nutpie sampler (default)."""
@@ -216,8 +216,8 @@ class TestDemandModelFit:
         assert dm.idata is not None
 
 
-class TestDemandModelComputePPD:
-    """Tests for DemandModel.compute_ppd()."""
+class TestDemandModelSamplePPD:
+    """Tests for DemandModel.sample_posterior_predictive()."""
 
     @pytest.fixture
     def fitted_model(self, tiny_data, model_config):
@@ -231,8 +231,8 @@ class TestDemandModelComputePPD:
         return dm
 
     def test_returns_xarray_dataarray(self, fitted_model):
-        """compute_ppd returns xr.DataArray."""
-        ppd = fitted_model.compute_ppd(n_samples=100)
+        """Returns xr.DataArray."""
+        ppd = fitted_model.sample_posterior_predictive(n_samples=100)
 
         import xarray as xr
 
@@ -240,7 +240,7 @@ class TestDemandModelComputePPD:
 
     def test_correct_dims(self, fitted_model):
         """PPD has dims (sample, product)."""
-        ppd = fitted_model.compute_ppd(n_samples=100)
+        ppd = fitted_model.sample_posterior_predictive(n_samples=100)
 
         assert set(ppd.dims) == {"sample", "product"}
         assert ppd.sizes["sample"] == 100
@@ -248,7 +248,7 @@ class TestDemandModelComputePPD:
 
     def test_product_coords_preserved(self, fitted_model):
         """PPD product coordinate matches the names from build()."""
-        ppd = fitted_model.compute_ppd(n_samples=100)
+        ppd = fitted_model.sample_posterior_predictive(n_samples=100)
 
         assert list(ppd.coords["product"].values) == ["Cake A", "Cake B"]
 
@@ -258,7 +258,7 @@ class TestDemandModelComputePPD:
 
         dm = DemandModel(model_config)
         with pytest.raises(RuntimeError):
-            dm.compute_ppd()
+            dm.sample_posterior_predictive()
 
 
 class TestDemandModelNetCDF:
@@ -276,10 +276,10 @@ class TestDemandModelNetCDF:
         return dm
 
     def test_roundtrip_preserves_ppd(self, fitted_model, tmp_path):
-        """After to_netcdf + from_netcdf, compute_ppd gives same results."""
+        """After to_netcdf + from_netcdf, sample_posterior_predictive gives same results."""
         from nachfrage.models import DemandModel
 
-        ppd_orig = fitted_model.compute_ppd(n_samples=100, seed=42)
+        ppd_orig = fitted_model.sample_posterior_predictive(n_samples=100, seed=42)
 
         path = tmp_path / "test_posterior.nc"
         fitted_model.to_netcdf(path)
@@ -290,7 +290,7 @@ class TestDemandModelNetCDF:
         assert loaded.product_names == fitted_model.product_names
 
         # PPD with same seed should be identical
-        ppd_loaded = loaded.compute_ppd(n_samples=100, seed=42)
+        ppd_loaded = loaded.sample_posterior_predictive(n_samples=100, seed=42)
         np.testing.assert_array_equal(ppd_orig.values, ppd_loaded.values)
 
     def test_roundtrip_preserves_product_names(self, fitted_model, tmp_path):

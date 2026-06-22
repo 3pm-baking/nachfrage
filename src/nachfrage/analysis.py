@@ -67,8 +67,8 @@ def format_results_table(
         import numpy as np
         import pandas as pd
 
-        mu_samples = idata.posterior["μ_product"].values
-        alpha_samples = idata.posterior["α"].values
+        mu_samples = idata.posterior["mu_product"].values
+        alpha_samples = idata.posterior["demand_alpha"].values
         mu_samples = mu_samples.reshape(-1, mu_samples.shape[-1])
         alpha_samples = alpha_samples.reshape(-1)
     except Exception:
@@ -140,8 +140,8 @@ def format_results_table(
         "lower α = more overdispersion"
     )
 
-    ess = az.ess(idata, var_names=["μ_global", "σ_product", "α", "μ_product"])
-    rhat = az.rhat(idata, var_names=["μ_global", "σ_product", "α", "μ_product"])
+    ess = az.ess(idata, var_names=["mu_global", "sigma_product", "demand_alpha", "mu_product"])
+    rhat = az.rhat(idata, var_names=["mu_global", "sigma_product", "demand_alpha", "mu_product"])
     ess_vals = [np.asarray(v).min() for v in ess.values()]
     rhat_vals = [np.asarray(v).max() for v in rhat.values()]
     lines.append("\nConvergence:")
