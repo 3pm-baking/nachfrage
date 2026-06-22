@@ -234,24 +234,31 @@ class DemandModel:
 
     def sample_new_product_predictive(
         self,
-        n_samples: int = 10000,
         n_products: int = 1,
-        seed: int = 42,
+        product_names: list[str] | None = None,
+        random_seed: int = 42,
     ) -> xr.DataArray:
-        """Draw posterior predictive demand for a new product with no observations.
+        """Draw posterior predictive demand for products with no observations.
 
-        Samples from the population distribution: draws a raw product offset
-        from Normal(0, 1), scales it by sigma_product, and shifts by mu_global.
-        Integrates over posterior uncertainty in all parameters.
+        Builds a separate PyMC prediction model that shares parameter names
+        with the training model (mu_global, sigma_product, demand_alpha)
+        so those are frozen from the posterior trace. New product offsets are
+        sampled from the prior Normal(0, 1) and combined with the posterior
+        parameters via the non-centered parameterization.
+
+        The likelihood distribution family is taken from the model config,
+        so this works for any distribution supported by the training model.
 
         Args:
-            n_samples: Number of posterior predictive draws.
-            n_products: Number of hypothetical new products to simulate.
-            seed: Random seed for reproducibility.
+            n_products: Number of new products to simulate. Ignored if
+                ``product_names`` is provided.
+            product_names: Custom labels for the product coordinate. Defaults
+                to ``new_0, new_1, ...``.
+            random_seed: Random seed for reproducibility.
 
         Returns:
-            xr.DataArray with dims (sample, product) and product coordinate
-            labeled ``new_0, new_1, ...``.
+            xr.DataArray with dims (sample, product) containing posterior
+            predictive demand draws.
 
         Raises:
             RuntimeError: If idata is not available.
@@ -261,38 +268,31 @@ class DemandModel:
                 "No posterior samples available. Call fit() or from_netcdf() first."
             )
 
-        mu_global = self.idata.posterior["mu_global"]
-        sigma_product = self.idata.posterior["sigma_product"]
-        alpha = self.idata.posterior["demand_alpha"]
+        if product_names is None:
+            product_names = [f"new_{i}" for i in range(n_products)]
 
-        mu_g_stacked = mu_global.stack(sample=("chain", "draw")).values
-        sig_stacked = sigma_product.stack(sample=("chain", "draw")).values
-        alpha_stacked = alpha.stack(sample=("chain", "draw")).values
+        dist_name = self.model_config["likelihood"].distribution.distribution
 
-        n_total = len(mu_g_stacked)
-        rng = np.random.default_rng(seed)
-        idx = rng.integers(0, n_total, size=n_samples)
+        with pm.Model(coords={"product": product_names}) as pred_model:
+            mu_global = pm.Normal("mu_global")
+            sigma_product = pm.HalfNormal("sigma_product")
+            demand_alpha = pm.HalfNormal("demand_alpha")
+            mu_product_raw = pm.Normal(
+                "new_product_raw", dims="product",
+            )
+            mu_product = pm.math.exp(mu_global + mu_product_raw * sigma_product)
+            getattr(pm, dist_name)(
+                "new_demand", mu=mu_product, alpha=demand_alpha, dims="product",
+            )
 
-        mu_g_s = mu_g_stacked[idx]           # (n_samples,)
-        sig_s = sig_stacked[idx]             # (n_samples,)
-        alpha_s = alpha_stacked[idx]         # (n_samples,)
-
-        # Sample raw offset from the population prior: z ~ Normal(0, 1)
-        z = rng.normal(size=(n_samples, n_products))
-
-        mu_new = np.exp(mu_g_s[:, None] + z * sig_s[:, None])
-        p = alpha_s[:, None] / (alpha_s[:, None] + mu_new)
-        ppd_vals = rng.negative_binomial(alpha_s[:, None], p)
-
-        return xr.DataArray(
-            ppd_vals,
-            dims=("sample", "product"),
-            coords={
-                "sample": np.arange(n_samples),
-                "product": [f"new_{i}" for i in range(n_products)],
-            },
-            name="demand_ppd_new",
+        ppd_idata = pm.sample_posterior_predictive(
+            self.idata,
+            model=pred_model,
+            var_names=["new_demand"],
+            random_seed=random_seed,
+            predictions=True,
         )
+        return ppd_idata.predictions["new_demand"]
 
     def to_netcdf(self, path: str | Path, engine: str | None = None) -> None:
         """Save posterior inference data to a netCDF file.
