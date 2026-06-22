@@ -14,7 +14,7 @@ import pandas as pd
 class NewsvendorResult(NamedTuple):
     """Result from optimal_quantity().
 
-    Immutable, with named field access and backward-compatible tuple unpacking.
+    Immutable, with named field access.
 
     Fields:
         best_q: Optimal quantity (multiple of batch_size).
@@ -36,7 +36,7 @@ class NewsvendorResult(NamedTuple):
 class ProfitProfile(NamedTuple):
     """Result from profit_profile().
 
-    Immutable, with named field access and backward-compatible tuple unpacking.
+    Immutable, with named field access.
 
     Fields:
         quantities: Array of prep quantities evaluated.
