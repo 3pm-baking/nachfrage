@@ -233,7 +233,7 @@ class TestDemandModelSamplePPD:
 
     def test_returns_xarray_dataarray(self, fitted_model):
         """Returns xr.DataArray."""
-        ppd = fitted_model.sample_posterior_predictive(n_samples=100)
+        ppd = fitted_model.sample_posterior_predictive()
 
         import xarray as xr
 
@@ -241,15 +241,14 @@ class TestDemandModelSamplePPD:
 
     def test_correct_dims(self, fitted_model):
         """PPD has dims (sample, product)."""
-        ppd = fitted_model.sample_posterior_predictive(n_samples=100)
+        ppd = fitted_model.sample_posterior_predictive()
 
         assert set(ppd.dims) == {"sample", "product"}
-        assert ppd.sizes["sample"] == 100
         assert ppd.sizes["product"] == 2
 
     def test_product_coords_preserved(self, fitted_model):
         """PPD product coordinate matches the names from build()."""
-        ppd = fitted_model.sample_posterior_predictive(n_samples=100)
+        ppd = fitted_model.sample_posterior_predictive()
 
         assert list(ppd.coords["product"].values) == ["Cake A", "Cake B"]
 
@@ -284,10 +283,10 @@ class TestDemandModelNewProductPPD:
         assert isinstance(ppd, xr.DataArray)
 
     def test_correct_dims_single_product(self, fitted_model):
-        """Default single product gives dims (chain, draw, product) with 1 product."""
+        """Default single product gives dims (sample, product) with 1 product."""
         ppd = fitted_model.sample_new_product_predictive()
 
-        assert set(ppd.dims) == {"chain", "draw", "product"}
+        assert set(ppd.dims) == {"sample", "product"}
         assert ppd.sizes["product"] == 1
 
     def test_multiple_products(self, fitted_model):
@@ -322,7 +321,7 @@ class TestDemandModelNetCDF:
         """After to_netcdf + from_netcdf, sample_posterior_predictive gives same results."""
         from nachfrage.models import DemandModel
 
-        ppd_orig = fitted_model.sample_posterior_predictive(n_samples=100, seed=42)
+        ppd_orig = fitted_model.sample_posterior_predictive(random_seed=42)
 
         path = tmp_path / "test_posterior.nc"
         fitted_model.to_netcdf(path)
@@ -333,7 +332,7 @@ class TestDemandModelNetCDF:
         assert loaded.product_names == fitted_model.product_names
 
         # PPD with same seed should be identical
-        ppd_loaded = loaded.sample_posterior_predictive(n_samples=100, seed=42)
+        ppd_loaded = loaded.sample_posterior_predictive(random_seed=42)
         np.testing.assert_array_equal(ppd_orig.values, ppd_loaded.values)
 
     def test_roundtrip_preserves_product_names(self, fitted_model, tmp_path):
