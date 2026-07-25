@@ -304,6 +304,180 @@ class TestDemandModelNewProductPPD:
         assert np.all(ppd.values >= 0)
 
 
+class TestDemandModelBuildPrice:
+    """Tests for DemandModel.build() with price column."""
+
+    @pytest.fixture
+    def price_data_tiny(self, rng):
+        """Tiny dataset with price: 2 products, 6 obs each, 2 price levels.
+
+        True elasticity = -1.0 (unit elastic): doubling price halves demand.
+        """
+        product_names = ["Cake A", "Cake B"]
+        true_beta = -1.0
+        alpha = 5.0
+
+        price_pairs = [(5.0, 10.0), (6.0, 12.0)]
+        ref_mus = [10.0, 6.0]
+
+        prices_list: list[float] = []
+        true_mus: list[float] = []
+        products: list[str] = []
+
+        for i, (p_low, p_high) in enumerate(price_pairs):
+            geo_mean = np.sqrt(p_low * p_high)
+            for p in [p_low, p_high]:
+                for _ in range(3):
+                    mu = ref_mus[i] * np.exp(true_beta * (np.log(p) - np.log(geo_mean)))
+                    prices_list.append(p)
+                    true_mus.append(mu)
+                    products.append(product_names[i])
+
+        true_mus_arr = np.array(true_mus)
+        demand = rng.negative_binomial(alpha, alpha / (alpha + true_mus_arr))
+        prepared = np.ceil(demand * 1.3).astype(int)
+        sold = demand.copy().astype(float)
+        censored = (sold >= prepared).astype(bool)
+        sold[censored] = prepared[censored]
+
+        return pd.DataFrame({
+            "sold": sold,
+            "prepared": prepared,
+            "product": products,
+            "price": prices_list,
+        })
+
+    def test_build_with_price_sets_flag(self, price_data_tiny, model_config):
+        """_has_price is True when price column present."""
+        from nachfrage.models import DemandModel
+
+        dm = DemandModel(model_config)
+        dm.build(price_data_tiny)
+
+        assert dm._has_price is True
+        assert dm._mean_log_price is not None
+        assert "Cake A" in dm._mean_log_price
+        assert "Cake B" in dm._mean_log_price
+
+    def test_build_with_price_creates_beta_price(self, price_data_tiny, model_config):
+        """PyMC model includes beta_price variable."""
+        from nachfrage.models import DemandModel
+
+        dm = DemandModel(model_config)
+        dm.build(price_data_tiny)
+
+        assert dm.model is not None
+        assert "beta_price" in dm.model.named_vars
+
+    def test_build_without_price_no_beta(self, tiny_data, model_config):
+        """Without price column, no beta_price in model."""
+        from nachfrage.models import DemandModel
+
+        dm = DemandModel(model_config)
+        dm.build(tiny_data)
+
+        assert dm._has_price is False
+        assert dm._mean_log_price is None
+        assert "beta_price" not in dm.model.named_vars
+
+    def test_build_price_log_price_is_stored(self, price_data_tiny, model_config):
+        """_mean_log_price stores geometric mean of price per product."""
+        from nachfrage.models import DemandModel
+
+        dm = DemandModel(model_config)
+        dm.build(price_data_tiny)
+
+        # Cake A at prices 5 and 10: geo_mean = sqrt(50) ≈ 7.07, log ≈ 1.955
+        # Cake B at prices 6 and 12: geo_mean = sqrt(72) ≈ 8.49, log ≈ 2.139
+        assert dm._mean_log_price is not None
+        np.testing.assert_allclose(dm._mean_log_price["Cake A"], np.log(np.sqrt(50)), rtol=1e-5)
+        np.testing.assert_allclose(dm._mean_log_price["Cake B"], np.log(np.sqrt(72)), rtol=1e-5)
+
+
+class TestDemandModelFitPrice:
+    """Integration tests: fit model with price covariate."""
+
+    def test_fit_produces_beta_price_posterior(self, tiny_data, model_config):
+        """Fitting with price gives beta_price in posterior."""
+        from nachfrage.models import DemandModel
+
+        # Add price column to tiny_data (constant price for each product)
+        df = tiny_data.copy()
+        df["price"] = np.where(df["product"] == "Cake A", 5.0, 10.0)
+
+        dm = DemandModel(model_config)
+        dm.build(df)
+        dm.fit(draws=5, tune=5, chains=1, random_seed=42, progressbar=False)
+
+        assert dm.idata is not None
+        posterior = dm.idata.posterior
+        assert "beta_price" in posterior.data_vars
+        assert posterior["beta_price"].values.shape is not None
+
+
+class TestDemandModelPredictAtPrice:
+    """Tests for predict_demand_at_price()."""
+
+    @pytest.fixture
+    def fitted_price_model(self, tiny_data, model_config):
+        """A fitted DemandModel with price covariate."""
+        from nachfrage.models import DemandModel
+
+        df = tiny_data.copy()
+        df["price"] = np.where(df["product"] == "Cake A", 5.0, 10.0)
+
+        dm = DemandModel(model_config)
+        dm.build(df)
+        dm.fit(draws=5, tune=5, chains=1, random_seed=42, progressbar=False)
+        return dm
+
+    def test_returns_xarray_dataarray(self, fitted_price_model):
+        """Returns xr.DataArray."""
+        ppd = fitted_price_model.predict_demand_at_price(price=7.0)
+
+        import xarray as xr
+
+        assert isinstance(ppd, xr.DataArray)
+
+    def test_correct_dims(self, fitted_price_model):
+        """PPD has dims (sample, product)."""
+        ppd = fitted_price_model.predict_demand_at_price(price=7.0)
+
+        assert set(ppd.dims) == {"sample", "product"}
+        assert ppd.sizes["product"] == 2
+
+    def test_higher_price_lower_demand(self, fitted_price_model):
+        """Higher price produces lower or equal mean demand."""
+        ppd_low = fitted_price_model.predict_demand_at_price(price=5.0, random_seed=42)
+        ppd_high = fitted_price_model.predict_demand_at_price(price=15.0, random_seed=43)
+
+        mean_low = ppd_low.mean(dim="sample").values
+        mean_high = ppd_high.mean(dim="sample").values
+
+        assert np.all(mean_low >= mean_high)
+
+    def test_raises_without_idata(self, model_config):
+        """Raises RuntimeError if called before fit."""
+        from nachfrage.models import DemandModel
+
+        dm = DemandModel(model_config)
+        with pytest.raises(RuntimeError):
+            dm.predict_demand_at_price(price=7.0)
+
+    def test_no_price_model_falls_back(self, tiny_data, model_config):
+        """Without price covariate, predict_demand_at_price is same as PPD."""
+        from nachfrage.models import DemandModel
+
+        dm = DemandModel(model_config)
+        dm.build(tiny_data)
+        dm.fit(draws=5, tune=5, chains=1, random_seed=42, progressbar=False)
+
+        ppd_pred = dm.predict_demand_at_price(price=99.0, random_seed=42)
+        ppd_std = dm.sample_posterior_predictive(random_seed=42)
+
+        np.testing.assert_array_equal(ppd_pred.values, ppd_std.values)
+
+
 class TestDemandModelNetCDF:
     """Tests for to_netcdf() / from_netcdf() roundtrip."""
 
@@ -354,3 +528,32 @@ class TestDemandModelNetCDF:
 
         loaded = DemandModel.from_netcdf(path, model_config={"mu_global": "override"})
         assert loaded.model_config["mu_global"] == "override"
+
+
+class TestDemandModelNetCDFPrice:
+    """Tests for to_netcdf() / from_netcdf() with price metadata."""
+
+    @pytest.fixture
+    def fitted_price_model(self, tiny_data, model_config):
+        """A fitted DemandModel with price covariate."""
+        from nachfrage.models import DemandModel
+
+        df = tiny_data.copy()
+        df["price"] = np.where(df["product"] == "Cake A", 5.0, 10.0)
+
+        dm = DemandModel(model_config)
+        dm.build(df)
+        dm.fit(draws=5, tune=5, chains=1, random_seed=42, progressbar=False)
+        return dm
+
+    def test_roundtrip_preserves_price_metadata(self, fitted_price_model, tmp_path):
+        """_has_price and _mean_log_price survive roundtrip."""
+        from nachfrage.models import DemandModel
+
+        path = tmp_path / "test_price_posterior.nc"
+        fitted_price_model.to_netcdf(path)
+
+        loaded = DemandModel.from_netcdf(path)
+        assert loaded._has_price is True
+        assert loaded._mean_log_price is not None
+        assert loaded._mean_log_price.keys() == fitted_price_model._mean_log_price.keys()
