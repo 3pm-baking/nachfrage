@@ -18,6 +18,7 @@ pip install nachfrage[plot]
 import numpy as np
 import pandas as pd
 from nachfrage import DemandModel, optimal_quantity
+from nachfrage.terms import default_terms
 
 # --- Fake demand data: 3 products, 10 market days each ---
 rng = np.random.default_rng(42)
@@ -49,12 +50,12 @@ print(df.head())
 # 4   7.0      12.0  Cheese Cake (slice)
 
 # --- Build and fit the model ---
-model = DemandModel()
+model = DemandModel(terms=default_terms(with_price=False))
 model.build(df)
 model.fit(draws=1000, tune=1000, chains=4, random_seed=42)
 
-# --- Posterior predictive ---
-ppd = model.sample_posterior_predictive(n_samples=10000)
+# --- Posterior predictive, one column per product ---
+ppd = model.sample_product_predictive()
 # ppd is an xr.DataArray with dims (sample, product)
 print(f"Shape: {ppd.sizes}")
 print(ppd.coords["product"].values)
@@ -68,8 +69,10 @@ print(f"Optimal prep: {r.best_q}, expected profit: ${r.profit:.2f}")
 
 # --- Save and reload ---
 model.to_netcdf("posterior.nc")
-loaded = DemandModel.from_netcdf("posterior.nc")
-ppd_reloaded = loaded.sample_posterior_predictive(n_samples=10000)
+loaded = DemandModel.from_netcdf(
+    "posterior.nc", terms=default_terms(with_price=False)
+)
+ppd_reloaded = loaded.sample_product_predictive()
 
 # --- Plotting (delegate to arviz_plots) ---
 import arviz_plots as azp
@@ -84,11 +87,13 @@ plt.savefig("forest.png", dpi=150, bbox_inches="tight")
 
 ## Model
 
-The default model is a **hierarchical NegativeBinomial** with right-censoring:
+The default model is a **hierarchical NegativeBinomial** with right-censoring.
+The linear predictor is a sum of `pymc_marketing.terms` pieces, wrapped in a
+single `exp` link:
 
 ```
-demand ~ Censored(NegativeBinomial(mu=mu_product, alpha), upper=prepared)
-mu_product = exp(mu_global + mu_product_raw * sigma_product)
+demand ~ Censored(NegativeBinomial(mu=mu, alpha), upper=prepared)
+mu     = exp(intercept + product_offset + beta_log_price @ log_price)
 ```
 
 - **Censoring**: when a product sells out (`sold >= prepared`), we only know demand ≥ prepared
@@ -97,16 +102,30 @@ mu_product = exp(mu_global + mu_product_raw * sigma_product)
 
 ### Custom priors
 
-```python
-from pymc_extras.prior import Prior, Censored
+Terms are ordinary `pymc_marketing.terms` objects, so any of them can be
+swapped or extended. `nachfrage.terms.GroupContribution` adds the one piece
+upstream does not ship: a non-centered gather of per-group offsets.
 
-model = DemandModel(model_config={
-    "likelihood": Censored(Prior("NegativeBinomial",
-        alpha=Prior("HalfNormal", sigma=3.0))),
-    "mu_global": Prior("Normal", mu=np.log(15), sigma=0.3),
-    "sigma_product": Prior("HalfNormal", sigma=0.3),
-    "mu_product_raw": Prior("Normal", sigma=1.0, dims="product"),
-})
+```python
+import numpy as np
+from pymc_extras.prior import Prior
+from pymc_marketing.terms import Dot, Intercept
+from nachfrage.terms import GroupContribution
+
+terms = [
+    Intercept(prior=Prior("Normal", mu=np.log(15), sigma=0.3)),
+    GroupContribution(
+        data_source="product",
+        prior=Prior("Normal", mu=0, sigma=Prior("HalfNormal", sigma=0.3),
+                    dims="product"),
+    ),
+    Dot(
+        var_name="log_price",
+        name="beta_log_price",
+        prior=Prior("Normal", mu=-0.7, sigma=0.5, dims="feature"),
+    ),
+]
+model = DemandModel(terms=terms)
 ```
 
 ## API
@@ -114,6 +133,7 @@ model = DemandModel(model_config={
 | Module | Key exports | Purpose |
 |--------|------------|---------|
 | `nachfrage.models` | `DemandModel` | Build, fit, predict, save/load |
+| `nachfrage.terms` | `GroupContribution`, `default_terms` | Term composition on top of `pymc_marketing.terms` |
 | `nachfrage.decision` | `optimal_quantity`, `profit_profile`, `waste_sensitivity` | Newsvendor optimization |
 | `nachfrage.posterior` | `compute_ppd` | Standalone PPD computation |
 | `nachfrage.analysis` | `format_scenarios`, `format_results_table` | Text tables |
@@ -122,13 +142,14 @@ model = DemandModel(model_config={
 ### DemandModel lifecycle
 
 ```python
-model = DemandModel(model_config={...})
+model = DemandModel(terms=default_terms())
 model.build(df)  # df has columns: sold, prepared, product
 model.fit(draws=1000, tune=1000, chains=4)
-ppd = model.sample_posterior_predictive(n_samples=10000)
-model.to_netcdf("posterior.nc")      # save
-loaded = DemandModel.from_netcdf("posterior.nc")  # load
-loaded = DemandModel.from_idata(idata)            # from in-memory DataTree
+ppd = model.sample_product_predictive()   # dims (sample, product)
+obs = model.sample_posterior_predictive() # dims (sample, obs), censoring kept
+model.to_netcdf("posterior.nc")           # save
+loaded = DemandModel.from_netcdf("posterior.nc", terms=default_terms())  # load
+loaded = DemandModel.from_idata(idata, terms=default_terms())            # in-memory
 ```
 
 ## License

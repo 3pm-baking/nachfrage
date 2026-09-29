@@ -50,14 +50,20 @@ def format_results_table(
     df,
     product_keys: list[str],
     label: str = "ALL",
+    group: str = "product",
 ) -> str:
     """Format a detailed results table from inference data.
+
+    The per-product mean demand is derived as ``exp(intercept + {group}_offset)``
+    rather than read from a single variable, because the linear predictor is
+    built from additive terms and no longer emits a combined ``mu_*`` variable.
 
     Args:
         idata: ArviZ InferenceData from a fitted model.
         df: DataFrame of observations.
-        product_keys: List of unique product names.
+        product_keys: List of unique product names, in the model's group coord order.
         label: Label for the table header.
+        group: Name of the group term whose offset drives the per-product mean.
 
     Returns:
         Multi-line string with the results table.
@@ -67,10 +73,22 @@ def format_results_table(
         import numpy as np
         import pandas as pd
 
-        mu_samples = idata.posterior["mu_product"].values
-        alpha_samples = idata.posterior["demand_alpha"].values
-        mu_samples = mu_samples.reshape(-1, mu_samples.shape[-1])
-        alpha_samples = alpha_samples.reshape(-1)
+        posterior = idata.posterior
+        intercept = np.asarray(posterior["intercept"].values).reshape(-1, 1)
+        offset = np.asarray(posterior[f"{group}_offset"].values)
+        offset = offset.reshape(-1, offset.shape[-1])
+        mu_samples = np.exp(intercept + offset)
+        alpha_samples = np.asarray(posterior["demand_alpha"].values).reshape(-1)
+        diag_vars = [
+            name
+            for name in (
+                "intercept",
+                f"{group}_sigma",
+                "demand_alpha",
+                f"{group}_offset",
+            )
+            if name in posterior
+        ]
     except Exception:
         return "Results unavailable — idata missing expected variables."
 
@@ -130,12 +148,8 @@ def format_results_table(
     )
     lines.append("  α → ∞ = Poisson (no overdispersion); lower α = more overdispersion")
 
-    ess = az.ess(
-        idata, var_names=["mu_global", "sigma_product", "demand_alpha", "mu_product"]
-    )
-    rhat = az.rhat(
-        idata, var_names=["mu_global", "sigma_product", "demand_alpha", "mu_product"]
-    )
+    ess = az.ess(idata, var_names=diag_vars)
+    rhat = az.rhat(idata, var_names=diag_vars)
     ess_vals = [np.asarray(v).min() for v in ess.values()]
     rhat_vals = [np.asarray(v).max() for v in rhat.values()]
     lines.append("\nConvergence:")

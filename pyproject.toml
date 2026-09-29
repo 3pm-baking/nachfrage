@@ -1,6 +1,6 @@
 [project]
 name = "nachfrage"
-version = "0.1.0"
+version = "0.2.0"
 description = "Bayesian demand modeling and newsvendor inventory optimization for small-batch producers."
 readme = "README.md"
 license = "MIT"
@@ -9,11 +9,12 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "pymc>=6.0.0",
-    "pymc-extras>=0.1.0",
+    "pymc>=6.3.1,<6.4.0",
+    "pymc-extras>=0.15.0,<0.16.0",
+    "pymc-marketing>=1.2.0",
     "xarray>=2024.0.0",
-    "numpy>=1.26.0",
-    "pandas>=2.0.0",
+    "numpy>=2.0,<2.5",
+    "pandas>=2.2",
     "arviz>=0.20.0",
 ]
 keywords = [
