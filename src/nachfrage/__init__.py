@@ -5,7 +5,7 @@ from nachfrage.decision import optimal_quantity, profit_profile, waste_sensitivi
 from nachfrage.models import DemandModel
 from nachfrage.posterior import compute_ppd
 
-__version__ = "0.2.0"
+__version__ = "0.1.0"
 
 __all__ = [
     "DemandModel",
