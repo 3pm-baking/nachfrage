@@ -67,11 +67,9 @@ r = optimal_quantity(
 )
 print(f"Optimal prep: {r.best_q}, expected profit: ${r.profit:.2f}")
 
-# --- Save and reload ---
+# --- Save and reload (terms travel with the file) ---
 model.to_netcdf("posterior.nc")
-loaded = DemandModel.from_netcdf(
-    "posterior.nc", terms=default_terms(with_price=False)
-)
+loaded = DemandModel.from_netcdf("posterior.nc")
 ppd_reloaded = loaded.sample_product_predictive()
 
 # --- Plotting (delegate to arviz_plots) ---
@@ -147,10 +145,18 @@ model.build(df)  # df has columns: sold, prepared, product
 model.fit(draws=1000, tune=1000, chains=4)
 ppd = model.sample_product_predictive()   # dims (sample, product)
 obs = model.sample_posterior_predictive() # dims (sample, obs), censoring kept
-model.to_netcdf("posterior.nc")           # save
-loaded = DemandModel.from_netcdf("posterior.nc", terms=default_terms())  # load
-loaded = DemandModel.from_idata(idata, terms=default_terms())            # in-memory
+model.to_netcdf("posterior.nc")           # saves posterior + design + terms
+
+# terms are serialized into the file, so a reload needs no arguments
+loaded = DemandModel.from_netcdf("posterior.nc")
+loaded = DemandModel.from_idata(idata)     # if saved through to_netcdf
 ```
+
+`terms=` is optional on load. When omitted, the term list is rebuilt from the
+JSON serialized into the trace by `to_netcdf`, so a round-tripped model always
+constructs the same graph. Pass it explicitly only when loading a trace that
+wasn't written by `to_netcdf` (e.g. a raw `pm.sample` result) — the term
+classes must be registered, which importing `nachfrage.terms` does.
 
 ## License
 

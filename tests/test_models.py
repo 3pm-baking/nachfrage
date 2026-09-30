@@ -227,3 +227,43 @@ class TestNetCDF:
         )
         with pytest.raises(RuntimeError):
             bare.sample_product_predictive()
+
+    def test_terms_round_trip_through_netcdf(self, fitted_price_model, tmp_path):
+        from nachfrage.models import DemandModel
+
+        path = tmp_path / "model.nc"
+        fitted_price_model.to_netcdf(path)
+
+        reloaded = DemandModel.from_netcdf(path)
+        assert [type(t).__name__ for t in reloaded.terms] == [
+            type(t).__name__ for t in fitted_price_model.terms
+        ]
+
+    def test_reload_without_terms_predicts(self, fitted_price_model, tmp_path):
+        from nachfrage.models import DemandModel
+
+        path = tmp_path / "model.nc"
+        fitted_price_model.to_netcdf(path)
+
+        reloaded = DemandModel.from_netcdf(path)
+        ppd = reloaded.sample_product_predictive()
+        assert set(ppd.dims) == {"sample", "product"}
+
+    def test_missing_terms_raises_clear_error(self, fitted_model):
+        from nachfrage.models import DemandModel
+
+        with pytest.raises(ValueError, match="No terms given"):
+            DemandModel.from_idata(fitted_model.idata.copy())
+
+    def test_explicit_terms_still_accepted(self, fitted_model, tmp_path):
+        from nachfrage.models import DemandModel
+        from nachfrage.terms import default_terms
+
+        path = tmp_path / "model.nc"
+        fitted_model.to_netcdf(path)
+
+        reloaded = DemandModel.from_netcdf(path, terms=default_terms(with_price=False))
+        assert set(reloaded.sample_product_predictive().dims) == {
+            "sample",
+            "product",
+        }

@@ -54,6 +54,7 @@ from pymc_marketing.terms import (
     collect_terms,
     register_data,
 )
+from pymc_marketing.terms import serialization as _serialization
 
 from nachfrage.terms import unique_labels
 
@@ -70,6 +71,9 @@ DESIGN_GROUP = "design"
 #: Likelihood-only columns, kept out of the saved design so counts are not
 #: written into a model artifact that prediction does not need.
 LIKELIHOOD_COLUMNS = ("sold", "prepared")
+#: Trace attribute holding the JSON-serialized term list, so a reloaded model
+#: rebuilds the same graph without the caller re-supplying terms.
+TERMS_ATTR = "nachfrage_terms"
 
 
 def _dataframe_to_dataset(df: pd.DataFrame) -> xr.Dataset:
@@ -116,8 +120,8 @@ class DemandModel:
         model.fit(draws=1000, tune=1000, chains=4)
         model.sample_posterior_predictive()  # (sample, obs)
         model.sample_product_predictive()    # (sample, product)
-        model.to_netcdf("posterior.nc")
-        DemandModel.from_netcdf("posterior.nc", terms=[...])
+        model.to_netcdf("posterior.nc")      # saves posterior + design + terms
+        DemandModel.from_netcdf("posterior.nc")  # terms come back automatically
 
     Args:
         terms: Additive terms for the linear predictor.
@@ -456,35 +460,63 @@ class DemandModel:
         return design
 
     def to_netcdf(self, path: str | Path, engine: str | None = None) -> None:
-        """Save the posterior and its design matrix to a netCDF file.
+        """Save the posterior, its design matrix, and its terms to a netCDF file.
 
         The design travels with the trace so a reloaded model can still build
-        predictive graphs, which the predictor columns alone are enough for.
+        predictive graphs, and the term list is serialized into the trace
+        attributes so the graph is rebuilt without the caller re-supplying it.
         """
         if self.idata is None:
             raise RuntimeError("No posterior to save. Call fit() first.")
         tree = self.idata.copy()
+        self._stamp_terms(tree)
         design = self._design_for_storage()
         if design is not None:
             tree[DESIGN_GROUP] = xr.DataTree(design)
         tree.to_netcdf(str(path), engine=engine)
+
+    def _stamp_terms(self, idata: xr.DataTree) -> None:
+        """Serialize the term list into the trace attributes as JSON."""
+        idata.attrs[TERMS_ATTR] = json.dumps(
+            [_serialization.serialize(t) for t in self.terms],
+        )
+
+    @classmethod
+    def _resolve_terms(
+        cls,
+        terms: list[Any] | None,
+        idata: xr.DataTree,
+    ) -> list[Any]:
+        """Return the caller's terms, or rebuild them from the saved trace."""
+        if terms is not None:
+            return list(terms)
+        raw = idata.attrs.get(TERMS_ATTR)
+        if not raw:
+            raise ValueError(
+                "No terms given and none found on the trace. Pass terms=... "
+                "explicitly when loading a model that was not saved by this "
+                "class, or refit it so the terms are recorded."
+            )
+        return [_serialization.deserialize(blob) for blob in json.loads(raw)]
 
     @classmethod
     def from_idata(
         cls,
         idata: xr.DataTree,
         *,
-        terms: list[Any],
+        terms: list[Any] | None = None,
         likelihood: Prior = DEFAULT_LIKELIHOOD,
         group: str = "product",
     ) -> DemandModel:
         """Create a DemandModel from an xarray DataTree (no model graph).
 
-        Suitable for the predictive methods, not ``fit()``. ``terms`` must
-        match those used to fit, so variable names line up with the posterior.
-        Any saved design group is picked up to keep prediction working.
+        Suitable for the predictive methods, not ``fit()``. ``terms`` defaults
+        to the term list serialized into the trace by ``to_netcdf``, so a
+        round-tripped model needs no arguments. Any saved design group is picked
+        up to keep prediction working.
         """
-        inst = cls(terms=terms, likelihood=likelihood, group=group)
+        resolved = cls._resolve_terms(terms, idata)
+        inst = cls(terms=resolved, likelihood=likelihood, group=group)
         inst.idata = idata
         if DESIGN_GROUP in getattr(idata, "children", {}):
             inst._training_ds = idata[DESIGN_GROUP].ds
@@ -495,10 +527,13 @@ class DemandModel:
         cls,
         path: str | Path,
         *,
-        terms: list[Any],
+        terms: list[Any] | None = None,
         likelihood: Prior = DEFAULT_LIKELIHOOD,
         group: str = "product",
     ) -> DemandModel:
-        """Load a saved model from a netCDF file."""
+        """Load a saved model from a netCDF file.
+
+        ``terms`` defaults to the ones stored in the file by ``to_netcdf``.
+        """
         idata = az.from_netcdf(str(path))
         return cls.from_idata(idata, terms=terms, likelihood=likelihood, group=group)

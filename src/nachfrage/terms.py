@@ -49,6 +49,8 @@ import pymc.dims as pmd
 import xarray as xr
 from pymc_extras.prior import Prior
 from pymc_marketing.terms import ModelTerm
+from pymc_marketing.terms import pymc_extras_deserialize as _deserialize_prior
+from pymc_marketing.terms import serialization as _serialization
 
 __all__ = ["GroupContribution", "default_terms"]
 
@@ -197,3 +199,18 @@ class GroupContribution(ModelTerm):
         lookup = {label: i for i, label in enumerate(labels)}
         assignments = np.asarray(ds[self.data_source].values)
         return np.array([lookup[v] for v in assignments.tolist()], dtype=int)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the term so a saved model can rebuild it on load."""
+        return {"data_source": self.data_source, "prior": self.prior.to_dict()}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GroupContribution:
+        """Reconstruct a term from its serialized form."""
+        return cls(
+            data_source=data["data_source"],
+            prior=_deserialize_prior(data["prior"]),
+        )
+
+
+_serialization.register(GroupContribution)
