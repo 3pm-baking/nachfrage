@@ -34,7 +34,10 @@ questions:
 
 from __future__ import annotations
 
+import itertools
 import json
+import warnings
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +47,7 @@ import pandas as pd
 import pymc as pm
 import pytensor.xtensor.math as ptx_math
 import xarray as xr
+from pymc.exceptions import ImplicitFreezeWarning
 from pymc_extras.prior import Censored, Prior
 from pymc_marketing.terms import (
     Dot,
@@ -56,7 +60,7 @@ from pymc_marketing.terms import (
 )
 from pymc_marketing.terms import serialization as _serialization
 
-from nachfrage.terms import unique_labels
+from nachfrage.terms import GroupContribution, unique_labels
 
 DEFAULT_LIKELIHOOD = Censored(
     Prior("NegativeBinomial", alpha=Prior("HalfNormal", sigma=5.0)),
@@ -316,9 +320,197 @@ class DemandModel:
             xr.DataArray with dims ``(sample, product)``.
         """
         ds = self._require_training_ds()
+        extra = [s for s in self._group_sources() if s != self.group]
+        if extra:
+            raise ValueError(
+                "sample_product_predictive() only supports models whose only "
+                f"group term is {self.group!r}; this model also groups over "
+                f"{extra}. Use sample_group_predictive() instead, e.g. "
+                f"sample_group_predictive({{{extra[0]!r}: level}}) for "
+                "per-product demand at one level of the other groups."
+            )
         design = self._product_dataset(ds, price=price)
         model = self._build_product_graph(design)
         return self._draw(model, random_seed)
+
+    def sample_group_predictive(
+        self,
+        conditions: Mapping[str, Any] | None = None,
+        *,
+        design: Mapping[str, float] | None = None,
+        random_seed: int = 42,
+    ) -> xr.DataArray:
+        """Draw uncensored posterior predictive demand over a group grid.
+
+        Builds one row per combination of the group levels the terms read
+        (product × market, for a product+market model), then samples the same
+        unobserved-likelihood graph as :meth:`sample_posterior_predictive`.
+        This is the resolution that replaces hand-rolled posterior math for
+        models with more than one grouping term.
+
+        Args:
+            conditions: Optional per-group conditioning, e.g.
+                ``{"region": "north"}`` — restricts the grid to one level of
+                that group while sweeping the rest.
+            design: Optional per-column values for covariate columns a
+                ``Dot`` term reads (e.g. ``{"log_price": 2.3}``). Overrides
+                the default resolution, which uses the mean of the training
+                rows that match each grid cell's group values.
+            random_seed: Random seed.
+
+        Returns:
+            xr.DataArray with dims ``(sample, <group dims...>)`` in term order,
+            e.g. ``(sample, product, region)``. Demand is per reference
+            window (exposure 1); scale when predicting a different window
+            length.
+        """
+        ds = self._require_training_ds()
+        design_vars = self._grid_design_vars(ds)
+        overrides = dict(design or {})
+        unknown = set(overrides) - set(design_vars)
+        if unknown:
+            raise ValueError(
+                f"Unknown design column(s) {sorted(unknown)}; this model's "
+                f"covariate columns are {design_vars or 'none'}"
+            )
+
+        grid = self._grid_dataset(ds, conditions=conditions, design_overrides=overrides)
+        model = self._build_graph(grid, observed=False)
+        draws = self._draw(model, random_seed)
+        return self._unstack_grid(draws, grid)
+
+    def _grid_design_vars(self, ds: xr.Dataset) -> list[str]:
+        """Covariate columns the grid rows must carry values for.
+
+        A covariate column is one that is neither a group assignment a term
+        reads, nor likelihood data. Covering it generically keeps the grid
+        builder agnostic to any particular ``Dot`` term.
+        """
+        groups = set(self._group_sources())
+        likelihood = {"sold", "prepared", "exposure"}
+        return [c for c in ds.data_vars if c not in groups and c not in likelihood]
+
+    def _group_sources(self) -> list[str]:
+        """Group column names read by any ``GroupContribution`` term, in term order."""
+        return [
+            term.data_source
+            for term in collect_terms(self.terms)
+            if isinstance(term, GroupContribution)
+        ]
+
+        """Group column names read by any ``GroupContribution`` term, in term order."""
+        return [
+            term.data_source
+            for term in collect_terms(self.terms)
+            if isinstance(term, GroupContribution)
+        ]
+
+    def _grid_dataset(
+        self,
+        ds: xr.Dataset,
+        *,
+        conditions: Mapping[str, Any] | None = None,
+        design_overrides: Mapping[str, float] | None = None,
+    ) -> xr.Dataset:
+        """Build a design dataset whose rows are group-level combinations.
+
+        One row per Cartesian product of the group levels observed in ``ds``;
+        ``conditions`` restricts a group to a single level. Exposure is
+        omitted (structurally 1: demand per reference window).
+        """
+        conditions = dict(conditions or {})
+        sources = self._group_sources()
+        unknown = set(conditions) - set(sources)
+        if unknown:
+            raise ValueError(
+                f"Unknown condition group(s) {sorted(unknown)}; "
+                f"model groups are {sources}"
+            )
+
+        levels: dict[str, list[Any]] = {}
+        for source in sources:
+            observed = unique_labels(ds[source])
+            if source in conditions:
+                given = conditions[source]
+                if given not in observed:
+                    raise ValueError(
+                        f"Level {given!r} not observed for group {source!r}; "
+                        f"known levels: {observed}"
+                    )
+                levels[source] = [given]
+            else:
+                levels[source] = observed
+
+        rows = list(itertools.product(*(levels[s] for s in sources)))
+        coords: dict[str, Any] = {"obs": np.arange(len(rows))}
+        data_vars: dict[str, Any] = {
+            source: ("obs", [row[i] for row in rows])
+            for i, source in enumerate(sources)
+        }
+
+        overrides = design_overrides or {}
+        design_columns = self._grid_design_vars(ds)
+        for column in design_columns:
+            if column in overrides:
+                value = float(overrides[column])
+                design_column = np.full(len(rows), value, dtype=float)
+            else:
+                design_column = np.asarray(
+                    [
+                        self._row_mean(
+                            ds, np.asarray(ds[column].values).reshape(-1), sources, row
+                        )
+                        for row in rows
+                    ],
+                    dtype=float,
+                )
+            data_vars[column] = (("obs", COVARIATE_DIM), design_column.reshape(-1, 1))
+            # All columns share one feature axis; label it by the sole column
+            # name when there is exactly one, otherwise a neutral label.
+            coords[COVARIATE_DIM] = (
+                [column] if len(design_columns) == 1 else [COVARIATE_DIM]
+            )
+
+        return xr.Dataset(data_vars, coords=coords)
+
+    def _row_mean(
+        self,
+        ds: xr.Dataset,
+        column_values: np.ndarray,
+        sources: list[str],
+        cell: tuple[Any, ...],
+    ) -> float:
+        """Mean training value over rows matching this grid cell's groups.
+
+        Falls back to rows matching only ``self.group`` when the full cell
+        combination was never observed, and to ``0.0`` when even that level
+        is unknown to the training data.
+        """
+        mask = np.ones(column_values.shape, dtype=bool)
+        for source, level in zip(sources, cell, strict=True):
+            mask &= np.asarray(ds[source].values) == level
+        if mask.any():
+            return float(column_values[mask].mean())
+
+        if self.group in sources:
+            level = cell[sources.index(self.group)]
+            mask = np.asarray(ds[self.group].values) == level
+            if mask.any():
+                return float(column_values[mask].mean())
+        return 0.0
+
+    def _unstack_grid(self, draws: xr.DataArray, design: xr.Dataset) -> xr.DataArray:
+        """Reshape ``(sample, obs)`` draws onto the grid's group dimensions."""
+        sources = self._group_sources()
+        if isinstance(draws.coords["obs"].to_index(), pd.MultiIndex):
+            return draws.unstack("obs")
+        mindex_coords = xr.Coordinates.from_pandas_multiindex(
+            pd.MultiIndex.from_arrays(
+                [design[s].values.tolist() for s in sources], names=sources
+            ),
+            "obs",
+        )
+        return draws.assign_coords(mindex_coords).unstack("obs")
 
     def _draw(self, model: pm.Model, random_seed: int) -> xr.DataArray:
         """Sample ``demand`` from ``model`` using the fitted posterior."""
@@ -327,12 +519,18 @@ class DemandModel:
                 "No posterior samples available. Call fit() or from_netcdf() first."
             )
 
-        ppd_idata = pm.sample_posterior_predictive(
-            self.idata,
-            model=model,
-            var_names=["demand"],
-            random_seed=random_seed,
-        )
+        with warnings.catch_warnings():
+            # Conditioned predictive grids shrink group coords; PyMC warns it
+            # implicitly froze the group parameters. Freezing the posterior
+            # values (rather than resampling them) is exactly what posterior
+            # predictive sampling must do, so the warning is noise here.
+            warnings.simplefilter("ignore", ImplicitFreezeWarning)
+            ppd_idata = pm.sample_posterior_predictive(
+                self.idata,
+                model=model,
+                var_names=["demand"],
+                random_seed=random_seed,
+            )
         da = ppd_idata.posterior_predictive["demand"]
         skip = ("chain", "draw")
         target = [d for d in da.dims if d not in skip][0]

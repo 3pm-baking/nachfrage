@@ -10,6 +10,8 @@ import warnings
 import numpy as np
 import pandas as pd
 import pytest
+from pymc_extras.prior import Prior
+from pymc_marketing.terms import Intercept
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -267,3 +269,161 @@ class TestNetCDF:
             "sample",
             "product",
         }
+
+
+GROUPS = ["north", "south"]
+
+
+def _make_two_group_data(rng, n_per: int = 5) -> pd.DataFrame:
+    """Two products across two regions, censored sellouts, region-scaled demand."""
+    true_mu = {"Cake A": 10.0, "Cake B": 6.0}
+    alpha = 5.0
+    rows = []
+    for product, mu in true_mu.items():
+        for region in GROUPS:
+            scale = 1.2 if region == "north" else 0.7
+            demand = rng.negative_binomial(
+                alpha, alpha / (alpha + mu * scale), size=n_per
+            )
+            prepared = np.ceil(demand * 1.3).astype(int)
+            sold = np.minimum(demand, prepared)
+            for s, p in zip(sold, prepared, strict=True):
+                rows.append(
+                    {
+                        "sold": float(s),
+                        "prepared": float(p),
+                        "product": product,
+                        "region": region,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def _fit_two_group(df, *, draws: int = 20, tune: int = 20):
+    import numpy as np
+
+    from nachfrage.models import DemandModel
+    from nachfrage.terms import GroupContribution
+
+    terms = [
+        Intercept(prior=Prior("Normal", mu=np.log(8), sigma=0.5)),
+        GroupContribution(
+            data_source="region",
+            prior=Prior(
+                "Normal",
+                mu=0,
+                sigma=Prior("HalfNormal", sigma=0.5),
+                dims="region",
+            ),
+        ),
+        GroupContribution(
+            data_source="product",
+            prior=Prior(
+                "Normal",
+                mu=0,
+                sigma=Prior("HalfNormal", sigma=0.5),
+                dims="product",
+            ),
+        ),
+    ]
+    model = DemandModel(terms=terms)
+    model.build(df)
+    model.fit(draws=draws, tune=tune, chains=1, random_seed=0, progressbar=False)
+    return model
+
+
+@pytest.fixture(scope="module")
+def fitted_two_group_model():
+    rng = np.random.default_rng(0)
+    return _fit_two_group(_make_two_group_data(rng))
+
+
+class TestSampleGroupPredictive:
+    """Multi-group posterior predictive over a group-level grid."""
+
+    def test_grid_covers_all_group_combinations(self, fitted_two_group_model):
+        ppd = fitted_two_group_model.sample_group_predictive()
+
+        assert set(ppd.dims) == {"sample", "product", "region"}
+        assert list(ppd.coords["product"].values) == ["Cake A", "Cake B"]
+        assert list(ppd.coords["region"].values) == GROUPS
+        posterior = fitted_two_group_model.idata["posterior"]
+        total_draws = posterior.sizes["chain"] * posterior.sizes["draw"]
+        assert ppd.sizes["sample"] == total_draws
+
+    def test_conditional_restricts_to_one_level(self, fitted_two_group_model):
+        ppd = fitted_two_group_model.sample_group_predictive({"region": "north"})
+
+        assert set(ppd.dims) == {"sample", "product", "region"}
+        assert list(ppd.coords["region"].values) == ["north"]
+
+    def test_unknown_condition_group_raises(self, fitted_two_group_model):
+        with pytest.raises(ValueError, match="Unknown condition group"):
+            fitted_two_group_model.sample_group_predictive({"venue": "north"})
+
+    def test_unknown_condition_level_raises(self, fitted_two_group_model):
+        with pytest.raises(ValueError, match="not observed"):
+            fitted_two_group_model.sample_group_predictive({"region": "east"})
+
+    def test_product_predictive_points_to_group_predictive(
+        self, fitted_two_group_model
+    ):
+        with pytest.raises(ValueError, match="sample_group_predictive"):
+            fitted_two_group_model.sample_product_predictive()
+
+    def test_grid_demand_is_positive_and_varies_by_group(self, fitted_two_group_model):
+        ppd = fitted_two_group_model.sample_group_predictive()
+
+        means = ppd.mean("sample")
+        assert (means > 0).all()
+
+    def test_round_trip_preserves_grid_predictive(
+        self, fitted_two_group_model, tmp_path
+    ):
+        from nachfrage.models import DemandModel
+
+        path = tmp_path / "model.nc"
+        fitted_two_group_model.to_netcdf(path)
+
+        reloaded = DemandModel.from_netcdf(path)
+        ppd = reloaded.sample_group_predictive({"region": "north"})
+        assert set(ppd.dims) == {"sample", "product", "region"}
+        assert len(ppd.coords["product"].values) == 2
+
+
+@pytest.fixture(scope="module")
+def fitted_two_group_price_model():
+    """Two-group model that also carries a log_price Dot term."""
+    rng = np.random.default_rng(2)
+    df = _make_two_group_data(rng)
+    df["log_price"] = np.log(5.0)
+    return _fit_two_group(df)
+
+
+class TestSampleGroupPredictiveDesign:
+    """Grid rows resolve covariate columns generically, with overrides."""
+
+    def test_grid_supports_price_term_model(self, fitted_two_group_price_model):
+        ppd = fitted_two_group_price_model.sample_group_predictive()
+
+        assert set(ppd.dims) == {"sample", "product", "region"}
+        assert (ppd.mean("sample") > 0).all()
+
+    def test_design_override_sets_the_column(self, fitted_two_group_price_model):
+        at_zero = fitted_two_group_price_model.sample_group_predictive(
+            design={"log_price": 0.0}
+        )
+        at_high = fitted_two_group_price_model.sample_group_predictive(
+            design={"log_price": np.log(10.0)}
+        )
+
+        # Demand at a much higher price should not exceed demand at the low one.
+        assert (at_high.mean("sample") <= at_zero.mean("sample")).all()
+
+    def test_unknown_design_column_raises(self, fitted_two_group_price_model):
+        with pytest.raises(ValueError, match="Unknown design column"):
+            fitted_two_group_price_model.sample_group_predictive(design={"bogus": 1.0})
+
+    def test_design_override_rejected_without_covariates(self, fitted_two_group_model):
+        with pytest.raises(ValueError, match="covariate columns"):
+            fitted_two_group_model.sample_group_predictive(design={"log_price": 2.0})

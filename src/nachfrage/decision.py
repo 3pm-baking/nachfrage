@@ -10,6 +10,15 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
+#: Posterior draws for a product backed by fewer observations than this are
+#: prior-dominated: the predictive tail reflects the model's beliefs, not the
+#: item's observed sales record. Quantities optimized from such a tail can be
+#: wildly oversized (a real dogfooding scenario: one observation, a large
+#: margin, and the optimizer returned 43 whole cakes). Below the threshold,
+#: callers should treat ``confidence == "low"`` results as planning hints
+#: and sanity-check them against the raw sales history.
+MIN_OBSERVATIONS_FOR_CONFIDENCE = 3
+
 
 class NewsvendorResult(NamedTuple):
     """Result from optimal_quantity().
@@ -23,6 +32,11 @@ class NewsvendorResult(NamedTuple):
         sellout_prob: P(sell out) at best_q.
         expected_leftovers: Expected leftover units at best_q.
         profit: Expected profit at best_q.
+        confidence: "supported" when ``n_observations`` >=
+            MIN_OBSERVATIONS_FOR_CONFIDENCE, "low" below it, and ``None``
+            when the caller did not report an observation count. The
+            posterior itself does not know how many real observations feed
+            each level — only the caller does.
     """
 
     best_q: int | None
@@ -31,6 +45,7 @@ class NewsvendorResult(NamedTuple):
     sellout_prob: float | None
     expected_leftovers: float | None
     profit: float | None
+    confidence: str | None = None
 
 
 class ProfitProfile(NamedTuple):
@@ -55,8 +70,9 @@ def optimal_quantity(
     unit_cost: float | None,
     batch_size: int = 1,
     waste_penalty: float = 0,
+    n_observations: int | None = None,
 ) -> NewsvendorResult:
-    """Find the quantity Q that maximizes expected utility, constrained to batch multiples.
+    """Find the quantity Q that maximizes expected utility under batch limits.
 
     Expected Utility(Q) = E[min(D, Q)] * price - Q * unit_cost
                          - E[max(Q - D, 0)] * waste_penalty
@@ -70,10 +86,15 @@ def optimal_quantity(
         unit_cost: Production cost per unit.
         batch_size: Quantities must be multiples of batch_size.
         waste_penalty: Subjective cost per leftover unit (λ).
+        n_observations: How many real observations of this product the
+            posterior was fit on. The posterior draws themselves cannot tell
+            (one draw is not one market day); without this the result's
+            ``confidence`` stays ``None`` and the caller loses the thin-data
+            signal.
 
     Returns:
         NewsvendorResult with fields: best_q, utility, expected_sales,
-        sellout_prob, expected_leftovers, profit.
+        sellout_prob, expected_leftovers, profit, confidence.
 
     Raises:
         ValueError: If price or unit_cost is None, or unit_cost >= price.
@@ -84,6 +105,15 @@ def optimal_quantity(
         raise ValueError("unit_cost must be a number, got None")
     if unit_cost >= price:
         raise ValueError(f"unit_cost ({unit_cost}) must be less than price ({price})")
+    if n_observations is not None and n_observations < 0:
+        raise ValueError("n_observations must be >= 0")
+
+    if n_observations is None:
+        confidence = None
+    elif n_observations >= MIN_OBSERVATIONS_FOR_CONFIDENCE:
+        confidence = "supported"
+    else:
+        confidence = "low"
 
     max_q = int(np.percentile(ppd_col, 99)) + 5
     max_q = min(max_q, 200)
@@ -112,6 +142,7 @@ def optimal_quantity(
         sellout_prob,
         waste_at_best,
         profit_at_best,
+        confidence,
     )
 
 

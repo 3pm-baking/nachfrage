@@ -35,10 +35,12 @@ class TestOptimalQuantity:
         """With all demand exactly 10, optimal q = 10."""
         from nachfrage.decision import optimal_quantity
 
-        best_q, utility, sales, sellout, leftovers, profit = optimal_quantity(
-            deterministic_ppd[:, 0],
-            price=5.0,
-            unit_cost=2.0,
+        best_q, utility, sales, sellout, leftovers, profit, confidence = (
+            optimal_quantity(
+                deterministic_ppd[:, 0],
+                price=5.0,
+                unit_cost=2.0,
+            )
         )
 
         assert best_q == 10
@@ -55,10 +57,12 @@ class TestOptimalQuantity:
         """With all demand zero, optimal q = 0."""
         from nachfrage.decision import optimal_quantity
 
-        best_q, utility, sales, sellout, leftovers, profit = optimal_quantity(
-            deterministic_ppd[:, 2],
-            price=5.0,
-            unit_cost=2.0,
+        best_q, utility, sales, sellout, leftovers, profit, confidence = (
+            optimal_quantity(
+                deterministic_ppd[:, 2],
+                price=5.0,
+                unit_cost=2.0,
+            )
         )
 
         assert best_q == 0
@@ -69,7 +73,7 @@ class TestOptimalQuantity:
         """Optimal q is a multiple of batch_size."""
         from nachfrage.decision import optimal_quantity
 
-        best_q, _, _, _, _, _ = optimal_quantity(
+        best_q, _, _, _, _, _, _ = optimal_quantity(
             deterministic_ppd[:, 0],
             price=5.0,
             unit_cost=2.0,
@@ -84,13 +88,13 @@ class TestOptimalQuantity:
         """Higher waste penalty λ → same or lower optimal q."""
         from nachfrage.decision import optimal_quantity
 
-        best_q_no_penalty, _, _, _, _, _ = optimal_quantity(
+        best_q_no_penalty, _, _, _, _, _, _ = optimal_quantity(
             deterministic_ppd[:, 0],
             price=5.0,
             unit_cost=2.0,
             waste_penalty=0,
         )
-        best_q_with_penalty, _, _, _, leftovers, _ = optimal_quantity(
+        best_q_with_penalty, _, _, _, leftovers, _, _ = optimal_quantity(
             deterministic_ppd[:, 0],
             price=5.0,
             unit_cost=2.0,
@@ -111,7 +115,7 @@ class TestOptimalQuantity:
             unit_cost=2.0,
         )
 
-        best_q, utility, sales, sellout, leftovers, profit = result
+        (best_q, utility, sales, sellout, leftovers, profit, _) = result
         assert isinstance(best_q, int | np.integer)
         assert isinstance(utility, float | np.floating)
         assert isinstance(sales, float | np.floating)
@@ -194,3 +198,73 @@ class TestWasteSensitivity:
         opt_qs = df["opt_q"].values
         # Each successive value should be ≤ previous
         assert np.all(np.diff(opt_qs) <= 0)
+
+
+class TestObservationConfidence:
+    """Thin-data awareness: confidence flag on the result, no math changes."""
+
+    def test_no_observations_reported_gives_none(self, deterministic_ppd):
+        """Caller owes the observation count; absent → confidence None."""
+        from nachfrage.decision import optimal_quantity
+
+        result = optimal_quantity(deterministic_ppd[:, 0], price=5.0, unit_cost=2.0)
+        assert result.confidence is None
+
+    def test_thin_data_flagged_low(self, deterministic_ppd):
+        """One observation with a huge margin = the 43-whole-cakes scenario."""
+        from nachfrage.decision import optimal_quantity
+
+        result = optimal_quantity(
+            deterministic_ppd[:, 0], price=120.0, unit_cost=2.0, n_observations=1
+        )
+
+        assert result.confidence == "low"
+        # The flag exists precisely so oversized recs are visible, not to
+        # change the math: the optimizer may still pick a big quantity.
+        assert result.best_q is not None
+
+    def test_below_threshold_flagged_low(self, deterministic_ppd):
+        from nachfrage.decision import MIN_OBSERVATIONS_FOR_CONFIDENCE, optimal_quantity
+
+        result = optimal_quantity(
+            deterministic_ppd[:, 0],
+            price=5.0,
+            unit_cost=2.0,
+            n_observations=MIN_OBSERVATIONS_FOR_CONFIDENCE - 1,
+        )
+        assert result.confidence == "low"
+
+    def test_well_observed_confidence_supported(self, deterministic_ppd):
+        from nachfrage.decision import MIN_OBSERVATIONS_FOR_CONFIDENCE, optimal_quantity
+
+        result = optimal_quantity(
+            deterministic_ppd[:, 0],
+            price=5.0,
+            unit_cost=2.0,
+            n_observations=MIN_OBSERVATIONS_FOR_CONFIDENCE,
+        )
+        assert result.confidence == "supported"
+
+    def test_confident_and_confidentless_results_identical_numbers(
+        self, deterministic_ppd
+    ):
+        """Flag-only: reporting observations never changes the numbers."""
+        from nachfrage.decision import optimal_quantity
+
+        without = optimal_quantity(
+            deterministic_ppd[:, 0], 5.0, 2.0, n_observations=None
+        )
+        with_flag = optimal_quantity(
+            deterministic_ppd[:, 0], 5.0, 2.0, n_observations=50
+        )
+
+        assert without.best_q == with_flag.best_q
+        assert without.profit == with_flag.profit
+        assert without.utility == with_flag.utility
+        assert without.expected_sales == with_flag.expected_sales
+
+    def test_negative_observations_raise(self, deterministic_ppd):
+        from nachfrage.decision import optimal_quantity
+
+        with pytest.raises(ValueError, match="n_observations"):
+            optimal_quantity(deterministic_ppd[:, 0], 5.0, 2.0, n_observations=-1)

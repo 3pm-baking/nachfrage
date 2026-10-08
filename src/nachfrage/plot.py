@@ -408,7 +408,7 @@ def plot_waste_sensitivity(
 
         opt_qs = []
         for lam in lambdas:
-            best_q, _, _, _, _, _ = optimal_quantity(
+            best_q, _, _, _, _, _, _ = optimal_quantity(
                 ppd[:, pid],
                 row["price"],
                 row["cost"],
