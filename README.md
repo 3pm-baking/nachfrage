@@ -1,5 +1,9 @@
 # nachfrage
 
+[![CI](https://github.com/3pm-baking/nachfrage/actions/workflows/ci.yml/badge.svg)](https://github.com/3pm-baking/nachfrage/actions/workflows/ci.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%20|%203.13-blue)](https://www.python.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Bayesian demand modeling and newsvendor inventory optimization for small-batch producers.
 
 `nachfrage` (German for "demand") pairs with [`wright`](https://github.com/3pm-baking/wright) (supply/costing) to cover both sides of the production planning equation.
